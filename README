@@ -10,21 +10,24 @@ PICTUREPHONE
 
   TODO
 
-    - [ ] Use macOS API to capture webcam.
+    1. --mirror MODE
 
-    - [ ] Translate macOS webcam API into generic struct
-          we could later use on other OSes, webcams resolutions, etc too.
+      - [ ] Use macOS API to get webcam buffer.
 
-    - [ ] Interpret/convert webcam output as grayscale intensity or whatever
-          is the most optimized and portable grayscale format.
+      - [ ] Translate macOS webcam API into generic struct
+            we could later use on other OSes, webcams resolutions, etc too.
 
-    - [ ] Convert grayscale to ASCII as seen at
-          https://github.com/ertdfgcvb/play.core/blob/master/src/programs/camera/camera_gray.js
+      - Reminder: ensure separate the device/OS layer from the logic.
 
-    - [ ] Output fixed-size ascii output in the terminal.
+      - [ ] Interpret/convert webcam output as grayscale intensity or whatever
+            is the optimized and portable but braindead simple grayscale format.
 
-    - [ ] Change the ascii output in the terminal based on the terminal size,
-          update on resize.
+      - [ ] Convert grayscale to ASCII as seen at
+            https://github.com/ertdfgcvb/play.core/blob/master/src/programs/camera/camera_gray.js
+
+      - [ ] Output fixed-size ascii output in the terminal.
+
+    2. NETWORK MODE: 1-on-1
 
     - [ ] Find a way to create peer-to-peer connections with friends. Let's
           start with just 1-on-1s.
@@ -33,16 +36,36 @@ PICTUREPHONE
           existing (encrypted) protocol. Let's implement our own protocol,
           unencrypted at first.
 
-    - [ ] Ask [accept | reject] before letting people in the call.
+    3. UI
 
-    - [ ] See yourself too in a small box in the bottom right corner.
+      - [ ] Change the ascii output in the terminal based on the terminal size,
+            update on resize.
 
-    - [ ] Implement encryption of the data transmitted.
+      - [ ] Ask [accept | reject] before letting your friend in the call.
 
-    - [ ] Support multiple people calls, consider both a peer-to-peer solution
-          (raft or something?) and centralizing the call (redis?).
+      - [ ] See yourself too in a small box in the bottom right corner. Also
+            have an option to switch between split screen and youself in the bot
+            corner.
 
-    - [ ] Consider optimizing the data transmission protocol to be incremental
-          so it uses less data, and then is encoded/decoded on clients.
+    4. GROUP MODE: 3+ people call
 
-    - [ ] Support linux and bsd webcam interfaces.
+      - [ ] Support multiple people calls, consider both a peer-to-peer solution
+            (braindead simple, no raft) and centralizing the call (redis?).
+
+    5. ENCRYPTION
+
+      - [ ] Implement encryption of the data transmitted. Nothing standard, our
+            own implementation.
+
+    6. INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
+
+      - [ ] Consider optimizing the data transmission protocol to be incremental
+            so it uses less data, and then is encoded/decoded on clients.
+            Instead of sending the entirety of every frame with redundant data
+            from the previous frame.
+
+    7. PORTABILITY
+
+      - [ ] Support linux and bsd webcam interfaces.
+
+      - Reminder: ensure separate the device/OS layer from the logic.
