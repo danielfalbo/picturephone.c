@@ -46,8 +46,8 @@ jobs:
         run: |
           TAG="${{ steps.versioning.outputs.tag }}"
           gh release create "$TAG" \
-            --repo ${{ github.repository }}
-            --title "Release $TAG"
+            --repo ${{ github.repository }} \
+            --title "Release $TAG" \
             --generate-notes
 
           echo "url=https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" >> $GITHUB_OUTPUT
