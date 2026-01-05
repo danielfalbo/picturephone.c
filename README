@@ -43,6 +43,8 @@ PICTUREPHONE
 
       - [ ] Ask [accept | reject] before letting your friend in the call.
 
+      - [ ] macOS: Allow selecting which camera to use.
+
       - [ ] See yourself too in a small box in the bottom right corner. Also
             have an option to switch between split screen and youself in the bot
             corner.
