@@ -74,6 +74,9 @@ void freeCameraList(CameraInfo *list);
 #define NET_ROLE_SERVER 0
 #define NET_ROLE_CLIENT 1
 
+#define VIEW_PIP 0
+#define VIEW_SPLIT 1
+
 struct editorConfig {
   int screenrows; /* Number of rows that we can show */
   int screencols; /* Number of cols that we can show */
@@ -83,6 +86,7 @@ struct editorConfig {
 
   /* Configurable Parameters */
   int mode;       /* MODE_MIRROR or MODE_NETWORK */
+  int view_mode;  /* VIEW_PIP or VIEW_SPLIT */
   int net_role;   /* NET_ROLE_SERVER or NET_ROLE_CLIENT */
   int net_port;
   char net_ip[64];
@@ -1033,6 +1037,7 @@ void resolveDensityConfig(void) {
 
 void initEditor(void) {
   E.mode = MODE_NETWORK;
+  E.view_mode = VIEW_PIP;
   E.net_role = NET_ROLE_SERVER;
   E.net_port = 3000;
   E.list_cameras = 0;
@@ -1054,20 +1059,32 @@ void initTerminal(void) {
 
 /* --- VIDEO TO GRAYSCALE TO ASCII ------------------------------------------ */
 
-// Helper to convert an image buffer to ASCII in the abuf
-void renderAsciiFrame(struct abuf *ab, unsigned char *pixels, int w, int h) {
-  int rows = E.screenrows;
+void renderStatus(struct abuf *ab) {
   int cols = E.screencols;
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;1H", E.screenrows + 1);
+  abAppend(ab, buf, strlen(buf));
+  abAppend(ab, "\x1b[0K", 4);
+  int msglen = strlen(E.statusmsg);
+  if (msglen && time(NULL) - E.statusmsg_time < 5)
+    abAppend(ab, E.statusmsg, msglen <= cols ? msglen : cols);
+}
 
-  if (rows <= 0 || cols <= 0) return;
+// Helper to convert an image buffer (grayscale) to ASCII in the abuf
+void renderBuffer(struct abuf *ab, unsigned char *pixels, int w, int h,
+    int x_off, int y_off, int target_w, int target_h, int mirror) {
+  if (target_w <= 0 || target_h <= 0) return;
 
-  abAppend(ab,"\x1b[?25l",6); /* Hide cursor. */
-  abAppend(ab,"\x1b[H",3); /* Go home. */
+  for (int y = 0; y < target_h; y++) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", y_off + y + 1, x_off + 1);
+    abAppend(ab, buf, strlen(buf));
 
-  for (int y = 0; y < rows; y++) {
-    for (int x = 0; x < cols; x++) {
-      int ix = ((cols - 1 - x) * w) / cols;
-      int iy = (y * h) / rows;
+    for (int x = 0; x < target_w; x++) {
+      int ix = mirror ?
+                ((target_w - 1 - x) * w) / target_w :
+                (x * w) / target_w;
+      int iy = (y * h) / target_h;
 
       if (ix >= w) ix = w - 1;
       if (iy >= h) iy = h - 1;
@@ -1079,14 +1096,48 @@ void renderAsciiFrame(struct abuf *ab, unsigned char *pixels, int w, int h) {
         abAppend(ab, glyph, strlen(glyph));
       }
     }
-    abAppend(ab, "\r\n", 2);
   }
+}
 
-  // Render status message
-  abAppend(ab, "\x1b[0K", 4);
-  int msglen = strlen(E.statusmsg);
-  if (msglen && time(NULL) - E.statusmsg_time < 5)
-    abAppend(ab, E.statusmsg, msglen <= cols ? msglen : cols);
+// Helper to convert an image buffer (BGRA) to ASCII in the abuf
+void renderBufferBGRA(struct abuf *ab, unsigned char *pixels, int w, int h,
+    int x_off, int y_off, int target_w, int target_h, int mirror) {
+  if (target_w <= 0 || target_h <= 0) return;
+
+  for (int y = 0; y < target_h; y++) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", y_off + y + 1, x_off + 1);
+    abAppend(ab, buf, strlen(buf));
+
+    for (int x = 0; x < target_w; x++) {
+      int ix = mirror ?
+                ((target_w - 1 - x) * w) / target_w :
+                (x * w) / target_w;
+      int iy = (y * h) / target_h;
+
+      if (ix >= w) ix = w - 1;
+      if (iy >= h) iy = h - 1;
+
+      int offset = (iy * w + ix) * 4;
+      unsigned char b = pixels[offset + 0];
+      unsigned char g = pixels[offset + 1];
+      unsigned char r = pixels[offset + 2];
+      unsigned char intensity = (r+g+b)/3;
+
+      if (E.density_count > 0) {
+        int char_idx = (intensity * (E.density_count - 1)) / 255;
+        char *glyph = E.density_glyphs[char_idx];
+        abAppend(ab, glyph, strlen(glyph));
+      }
+    }
+  }
+}
+
+void renderAsciiFrame(struct abuf *ab, unsigned char *pixels, int w, int h) {
+  abAppend(ab,"\x1b[?25l",6); /* Hide cursor. */
+  abAppend(ab,"\x1b[H",3); /* Go home. */
+  renderBuffer(ab, pixels, w, h, 0, 0, E.screencols, E.screenrows, 1);
+  renderStatus(ab);
 }
 
 /* --- NETWORK MODE --------------------------------------------------------- */
@@ -1257,6 +1308,44 @@ long long current_timestamp(void) {
   return milliseconds;
 }
 
+void redrawNetworkView(camera *cam, unsigned char *peer_pixels,
+                        int p_w, int p_h) {
+  struct abuf ab = ABUF_INIT;
+  abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
+  abAppend(&ab,"\x1b[H",3); /* Go home. */
+
+  if (E.view_mode == VIEW_PIP) {
+    /* Render Peer Fullscreen */
+    renderBuffer(&ab, peer_pixels, p_w, p_h, 0, 0,
+                  E.screencols, E.screenrows, 1);
+
+    /* Render Self Small (bottom right) */
+    frame my_frame;
+    if (cameraGetFrame(cam, &my_frame)) {
+      int sw = E.screencols / 4;
+      int sh = E.screenrows / 4;
+      if (sw < 10) sw = 10;
+      if (sh < 5) sh = 5;
+      renderBufferBGRA(&ab, my_frame.pixels, my_frame.width, my_frame.height,
+          E.screencols - sw - 2, E.screenrows - sh - 2, sw, sh, 1);
+    }
+  } else {
+    /* Split Screen */
+    int half_w = E.screencols / 2;
+    renderBuffer(&ab, peer_pixels, p_w, p_h, 0, 0, half_w, E.screenrows, 1);
+
+    frame my_frame;
+    if (cameraGetFrame(cam, &my_frame)) {
+      renderBufferBGRA(&ab, my_frame.pixels, my_frame.width, my_frame.height,
+          half_w, 0, E.screencols - half_w, E.screenrows, 1);
+    }
+  }
+
+  renderStatus(&ab);
+  write(STDOUT_FILENO, ab.b, ab.len);
+  abFree(&ab);
+}
+
 void runNetworkMode(camera *cam) {
   int sockfd;
 
@@ -1275,6 +1364,10 @@ void runNetworkMode(camera *cam) {
   unsigned char *net_buffer = malloc(65536); // Max 255*255 + safety
   unsigned char *recv_buffer = malloc(132000); // 2 * max frame + safety
   int recv_len = 0;
+
+  // State: Peer's last frame for redraws
+  unsigned char *last_peer_pixels = malloc(65536);
+  int last_peer_w = 0, last_peer_h = 0;
 
   // State: Resolution I want to receive (My Terminal)
   int my_w = E.screencols;
@@ -1309,7 +1402,9 @@ void runNetworkMode(camera *cam) {
       my_h = new_h;
 
       // Notify Peer
-      unsigned char conf_pkt[3] = {'C', (unsigned char)my_w, (unsigned char)my_h};
+      unsigned char conf_pkt[3] = {'C',
+                                  (unsigned char)my_w,
+                                  (unsigned char)my_h};
       write(sockfd, conf_pkt, 3);
     }
 
@@ -1331,6 +1426,11 @@ void runNetworkMode(camera *cam) {
       char c;
       if (read(STDIN_FILENO, &c, 1) == 1) {
         if (c == CTRL_C) break;
+        if (c == 'v' || c == 'V') {
+          E.view_mode = (E.view_mode == VIEW_PIP) ? VIEW_SPLIT : VIEW_PIP;
+          if (last_peer_w > 0)
+            redrawNetworkView(cam, last_peer_pixels, last_peer_w, last_peer_h);
+        }
       }
     }
 
@@ -1366,10 +1466,11 @@ void runNetworkMode(camera *cam) {
             packet_size = 3 + (p_w * p_h);
             if (recv_len >= packet_size) {
               // Handle Picture
-              struct abuf ab = ABUF_INIT;
-              renderAsciiFrame(&ab, recv_buffer + 3, p_w, p_h);
-              write(STDOUT_FILENO, ab.b, ab.len);
-              abFree(&ab);
+              last_peer_w = p_w;
+              last_peer_h = p_h;
+              memcpy(last_peer_pixels, recv_buffer + 3, p_w * p_h);
+              redrawNetworkView(cam, last_peer_pixels,
+                                  last_peer_w, last_peer_h);
             } else {
               // Incomplete picture packet, wait for more data
               break;
@@ -1402,17 +1503,11 @@ void runNetworkMode(camera *cam) {
       frame frame;
       if (cameraGetFrame(cam, &frame)) {
         // Prepare Buffer for Resize (using peer's requested dimensions)
-        // resizeAndGray function assumes fixed NET_WIDTH, we need to adapt it.
-        // Or better: inline the logic here since we are changing it.
-
         int w = peer_w;
         int h = peer_h;
         int size = w * h;
 
         unsigned char header[3] = {'P', (unsigned char)w, (unsigned char)h};
-
-        // Manual Resize and Gray to buffer
-        // Note: net_buffer is large enough (65536)
 
         for (int y = 0; y < h; y++) {
           for (int x = 0; x < w; x++) {
@@ -1437,6 +1532,7 @@ void runNetworkMode(camera *cam) {
 
   free(net_buffer);
   free(recv_buffer);
+  free(last_peer_pixels);
   close(sockfd);
 }
 
@@ -1462,10 +1558,7 @@ void runMirrorMode(camera *cam) {
     if (cameraGetFrame(cam, &frame)) {
       struct abuf ab = ABUF_INIT;
 
-      int rows = E.screenrows;
-      int cols = E.screencols;
-
-      if (rows <= 0 || cols <= 0) {
+      if (E.screenrows <= 0 || E.screencols <= 0) {
         // Window too small, just sleep and continue
         struct timespec ts = {0, 33000000};
         nanosleep(&ts, NULL);
@@ -1475,44 +1568,10 @@ void runMirrorMode(camera *cam) {
       abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
       abAppend(&ab,"\x1b[H",3); /* Go home. */
 
-      unsigned char *p = frame.pixels;
+      renderBufferBGRA(&ab, frame.pixels, frame.width, frame.height,
+          0, 0, E.screencols, E.screenrows, 1);
 
-      for (int y = 0; y < rows; y++) {
-        for (int x = 0; x < cols; x++) {
-          // Map Terminal Coordinate (x,y) -> Image Coordinate (ix, iy)
-          // To Mirror: Scan Image X backwards relative to Terminal X
-          int ix = ((cols - 1 - x) * frame.width) / cols;
-          int iy = (y * frame.height) / rows;
-
-          // Clamp just in case integer math goes wild
-          if (ix >= frame.width) ix = frame.width - 1;
-          if (iy >= frame.height) iy = frame.height - 1;
-
-          // Get Pixel (BGRA)
-          int offset = (iy * frame.width + ix) * 4;
-          unsigned char b = p[offset + 0];
-          unsigned char g = p[offset + 1];
-          unsigned char r = p[offset + 2];
-
-          // Our grayscale conversion algorithm is very simple:
-          // we just grab the average of the RGB channels.
-          int intensity = (r+g+b)/3;
-
-          // Map to Char
-          if (E.density_count > 0) {
-            int char_idx = (intensity * (E.density_count - 1)) / 255;
-            char *glyph = E.density_glyphs[char_idx];
-            abAppend(&ab, glyph, strlen(glyph));
-          }
-        }
-        abAppend(&ab, "\r\n", 2);
-      }
-
-      // Render status message
-      abAppend(&ab, "\x1b[0K", 4);
-      int msglen = strlen(E.statusmsg);
-      if (msglen && time(NULL) - E.statusmsg_time < 5)
-        abAppend(&ab, E.statusmsg, msglen <= cols ? msglen : cols);
+      renderStatus(&ab);
 
       // Write buffer to stdout and free
       write(STDOUT_FILENO, ab.b, ab.len);
@@ -1720,7 +1779,8 @@ int main(int argc, char **argv) {
   cameraStart(&cam);
 
   char *mode_str = (E.mode == MODE_MIRROR) ? "mirror" : "network";
-  editorSetStatusMessage("HELP: Ctrl-C = quit | starting in %s mode", mode_str);
+  editorSetStatusMessage("HELP: Ctrl-C = quit | 'v' = toggle view | mode: %s",
+                          mode_str);
 
   if (E.mode == MODE_MIRROR) {
     runMirrorMode(&cam);
