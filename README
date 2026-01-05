@@ -1,63 +1,62 @@
-PICTUREPHONE
+                        PICTUREPHONE
+          Text-based video-conferencing in the terminal.
 
-  Text-based video-conferencing in the terminal.
+CREDITS AND INSPIRATION
 
-  CREDITS AND INSPIRATION
+  kubrick/2001
+  antirez/kilo
+  ertdfgcvb/play.core
 
-    kubrick/2001
-    antirez/kilo
-    ertdfgcvb/play.core
+MIRROR MODE
 
-  MIRROR MODE
+  To get started, you can see yourself in the mirror by running
 
-    To get started, you can see yourself in the mirror by running
+    picturephone --mirror
 
-      picturephone --mirror
+  which will activate the default webcam of your laptop and render your
+  text-based video feedback in your terminal.
 
-    which will activate the default webcam of your laptop and render your
-    text-based video feedback in your terminal.
+USAGE
 
-  USAGE
+  Local Mirror:
+    ./picturephone --mirror
 
-    Local Mirror:
-      ./picturephone --mirror
+  Network Host (Alice):
+    ./picturephone --listen 3000
 
-    Network Host (Alice):
-      ./picturephone --listen 3000
+  Network Client (Bob):
+    ./picturephone --connect <Alice_IP>:3000
 
-    Network Client (Bob):
-      ./picturephone --connect <Alice_IP>:3000
+TODO
 
-  TODO
+  1. UI
 
-    1. UI
+    - [ ] Ask [accept | reject] before letting your friend in the call.
 
-      - [ ] Ask [accept | reject] before letting your friend in the call.
+    - [ ] macOS: Allow selecting which camera to use.
 
-      - [ ] macOS: Allow selecting which camera to use.
+    - [ ] See yourself too in a small box in the bottom right corner. Also
+          have an option to switch between split screen and youself in the bot
+          corner.
 
-      - [ ] See yourself too in a small box in the bottom right corner. Also
-            have an option to switch between split screen and youself in the bot
-            corner.
+  2. GROUP MODE: 3+ people call
 
-    2. GROUP MODE: 3+ people call
+    - [ ] Support multiple people calls, consider both a peer-to-peer solution
+          (braindead simple, no raft) and centralizing the call (redis?).
 
-      - [ ] Support multiple people calls, consider both a peer-to-peer solution
-            (braindead simple, no raft) and centralizing the call (redis?).
+  3. ENCRYPTION
 
-    3. ENCRYPTION
+    - [ ] Implement encryption of the data transmitted. Nothing standard, our
+          own implementation.
 
-      - [ ] Implement encryption of the data transmitted. Nothing standard, our
-            own implementation.
+  4. INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
 
-    4. INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
+    - [ ] Consider optimizing the data transmission protocol to be incremental
+          so it uses less data, and then is encoded/decoded on clients.
+          Instead of sending the entirety of every frame with redundant data
+          from the previous frame. Similarly, the terminal should only update
+          the changed cells, not the entire picture.
 
-      - [ ] Consider optimizing the data transmission protocol to be incremental
-            so it uses less data, and then is encoded/decoded on clients.
-            Instead of sending the entirety of every frame with redundant data
-            from the previous frame. Similarly, the terminal should only update
-            the changed cells, not the entire picture.
+  5. PORTABILITY
 
-    5. PORTABILITY
-
-      - [ ] Support linux and bsd webcam interfaces.
+    - [ ] Support linux and bsd webcam interfaces.
