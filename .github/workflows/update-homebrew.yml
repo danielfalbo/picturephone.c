@@ -1,0 +1,59 @@
+name: Update Homebrew Formula
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Calculate SHA256
+        id: shasum
+        run: |
+          # Create the archive URL for the current commit
+          COMMIT_HASH=${{ github.sha }}
+          ARCHIVE_URL="https://github.com/danielfalbo/picturephone.c/archive/${COMMIT_HASH}.tar.gz"
+          
+          # Download and calculate hash
+          curl -L -o archive.tar.gz $ARCHIVE_URL
+          HASH=$(sha256sum archive.tar.gz | awk '{print $1}')
+          
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "url=$ARCHIVE_URL" >> $GITHUB_OUTPUT
+
+      - name: Checkout Homebrew Formulae
+        uses: actions/checkout@v4
+        with:
+          repository: danielfalbo/homebrew-formulae
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          path: homebrew-formulae
+
+      - name: Update Formula
+        run: |
+          cd homebrew-formulae
+          
+          # Update URL
+          sed -i 's|url ".*"|url "${{ steps.shasum.outputs.url }}"|' picturephone.rb
+          
+          # Update SHA256
+          sed -i 's|sha256 ".*"|sha256 "${{ steps.shasum.outputs.hash }}"|' picturephone.rb
+          
+          # Check if there are changes
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          
+          # Configure Git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Commit and Push
+          git add picturephone.rb
+          git commit -m "Update picturephone formula to ${{ github.sha }}"
+          git push
