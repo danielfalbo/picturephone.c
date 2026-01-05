@@ -1,4 +1,4 @@
-name: Update Homebrew Formula
+name: Auto-Release and Update Homebrew
 
 on:
   push:
@@ -6,25 +6,15 @@ on:
       - main
 
 jobs:
-  update-formula:
+  release-and-update:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Calculate SHA256
-        id: shasum
-        run: |
-          # Create the archive URL for the current commit
-          COMMIT_HASH=${{ github.sha }}
-          ARCHIVE_URL="https://github.com/danielfalbo/picturephone.c/archive/${COMMIT_HASH}.tar.gz"
-          
-          # Download and calculate hash
-          curl -L -o archive.tar.gz $ARCHIVE_URL
-          HASH=$(sha256sum archive.tar.gz | awk '{print $1}')
-          
-          echo "hash=$HASH" >> $GITHUB_OUTPUT
-          echo "url=$ARCHIVE_URL" >> $GITHUB_OUTPUT
+        with:
+          fetch-depth: 0
 
       - name: Checkout Homebrew Formulae
         uses: actions/checkout@v4
@@ -33,27 +23,71 @@ jobs:
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           path: homebrew-formulae
 
+      - name: Calculate Next Version
+        id: versioning
+        run: |
+          cd homebrew-formulae
+          FORMULA_FILE="picturephone.rb"
+
+          # Try to extract version. If not found, default to 0
+          CURRENT_VERSION=$(grep 'version "' "$FORMULA_FILE" | sed 's/.*"\(.*\)".*/\1/' || echo "0")
+          if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+$ ]]; then
+            CURRENT_VERSION=0
+          fi
+
+          NEW_VERSION=$((CURRENT_VERSION + 1))
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.versioning.outputs.tag }}"
+          gh release create "$TAG" \
+            --repo ${{ github.repository }}
+            --title "Release $TAG"
+            --generate-notes
+
+          echo "url=https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" >> $GITHUB_OUTPUT
+
       - name: Update Formula
         run: |
           cd homebrew-formulae
-          
+          FORMULA_FILE="picturephone.rb"
+
+          NEW_VERSION="${{ steps.versioning.outputs.version }}"
+          NEW_TAG="${{ steps.versioning.outputs.tag }}"
+          # We wait a few seconds for the archive to be ready
+          sleep 5
+          NEW_URL="https://github.com/danielfalbo/picturephone.c/archive/refs/tags/${NEW_TAG}.tar.gz"
+
+          echo "Downloading $NEW_URL to calculate SHA..."
+          curl -L -o archive.tar.gz "$NEW_URL"
+          NEW_SHA=$(sha256sum archive.tar.gz | awk '{print $1}')
+
+          echo "Updating formula to version $NEW_VERSION"
+
           # Update URL
-          sed -i 's|url ".*"|url "${{ steps.shasum.outputs.url }}"|' picturephone.rb
-          
+          sed -i 's|url ".*"|url "'$NEW_URL'"|' "$FORMULA_FILE"
+
           # Update SHA256
-          sed -i 's|sha256 ".*"|sha256 "${{ steps.shasum.outputs.hash }}"|' picturephone.rb
-          
-          # Check if there are changes
-          if git diff --quiet; then
-            echo "No changes to commit"
-            exit 0
+          sed -i 's|sha256 ".*"|sha256 "'$NEW_SHA'"|' "$FORMULA_FILE"
+
+          # Update or add version
+          if grep -q 'version "' "$FORMULA_FILE"; then
+            sed -i 's|version ".*"|version "'$NEW_VERSION'"|' "$FORMULA_FILE"
+          else
+            # Insert version after desc (standard practice)
+            sed -i '/desc "/a \ 	version "'$NEW_VERSION'"' "$FORMULA_FILE"
           fi
-          
+
           # Configure Git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # Commit and Push
-          git add picturephone.rb
-          git commit -m "Update picturephone formula to ${{ github.sha }}"
+          git add "$FORMULA_FILE"
+          git commit -m "Update picturephone formula to $NEW_TAG"
           git push
