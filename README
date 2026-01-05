@@ -23,26 +23,30 @@ INSTALL
 
   assuming you already have https://brew.sh.
 
-MIRROR MODE
+USAGE
 
   To get started, you can see yourself in the mirror by running
 
     picturephone --mirror
 
   which will activate the default webcam of your laptop and render your
-  text-based video feedback in your terminal.
+  text-based video feedback in your terminal. You can also
 
-TERMINAL USER INTERFACE
+    picturephone --help
 
-  Run
+  to get help, or
 
     picturephone
 
-  without any arguments and it will launch a comfortable TUI.
+  without any arguments to launch a comfortable TUI.
 
 TODO
 
-    - [ ] Docs
+    - [ ] Better README.
+
+        - [ ] SSH/Local tunnel example.
+
+        - [ ] Section: Communication protocol.
 
     - [ ] Ask [accept | reject] before letting your friend in the call.
 
