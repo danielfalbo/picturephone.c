@@ -1,3 +1,13 @@
+/*
+ * Picturephone --- Ascii video-conferencing in the terminal.
+ * -----------------------------------------------------------------------
+ *
+ * Credits and inspiration: antirez/kilo, ertdfgcvb/play.core, kubrick/2001.
+ *
+ * Author:                  Daniel Falbo <hi at danielfalbo dot com>.
+ *
+ * */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +26,7 @@
 #include <sys/select.h>
 #include <pthread.h>
 
-/* --- WEBCAM INTERFACE --------------------------------------------------------
+/* --- WEBCAM INTERFACE -------------------------------------------
  * Generic interfaces and data structures.
  * Each OS/device will implement them in their own way. */
 
@@ -147,7 +157,7 @@ void cameraInit(camera *cam, int width, int height) {
   // Create the Delegate Class at Runtime
   // We define a class "CaptureDelegate" that inherits from NSObject
   Class CaptureDelegate = objc_allocateClassPair(objc_getClass("NSObject"),
-                                                 "CaptureDelegate", 0);
+      "CaptureDelegate", 0);
 
   // Add the delegate method
   // (signature "v@:@@@" means void return, id self, SEL cmd, id, id, id)
@@ -160,36 +170,36 @@ void cameraInit(camera *cam, int width, int height) {
 
   // Setup AVFoundation Classes
   id AVCaptureSession = ((id_msg_t)objc_msgSend)(
-    (id)objc_getClass("AVCaptureSession"),
-    sel_registerName("alloc")
-  );
+      (id)objc_getClass("AVCaptureSession"),
+      sel_registerName("alloc")
+      );
   id session = ((id_msg_t)objc_msgSend)(AVCaptureSession,
-                                        sel_registerName("init"));
+      sel_registerName("init"));
 
   // Set Preset (Low quality is better for ASCII)
   // NSString *sessionPreset = AVFoundation.AVCaptureSessionPreset640x480;
   id preset = ((id_msg_str_t)objc_msgSend)(
-    (id)objc_getClass("NSString"),
-    sel_registerName("stringWithUTF8String:"),
-    "AVCaptureSessionPreset640x480"
-  );
+      (id)objc_getClass("NSString"),
+      sel_registerName("stringWithUTF8String:"),
+      "AVCaptureSessionPreset640x480"
+      );
   ((void_msg_ptr_t)objc_msgSend)(session,
-                                  sel_registerName("setSessionPreset:"),
-                                  preset);
+    sel_registerName("setSessionPreset:"),
+    preset);
 
   // Get Input Device
   id AVCaptureDevice = (id)objc_getClass("AVCaptureDevice");
   id mediaType = ((id_msg_str_t)objc_msgSend)(
-    (id)objc_getClass("NSString"),
-    sel_registerName("stringWithUTF8String:"),
-    "vide" // "vide" = AVMediaTypeVideo
-  );
+      (id)objc_getClass("NSString"),
+      sel_registerName("stringWithUTF8String:"),
+      "vide" // "vide" = AVMediaTypeVideo
+      );
 
   id device = ((id_msg_id_t)objc_msgSend)(
-    AVCaptureDevice,
-    sel_registerName("defaultDeviceWithMediaType:"),
-    mediaType
-  );
+      AVCaptureDevice,
+      sel_registerName("defaultDeviceWithMediaType:"),
+      mediaType
+      );
 
   if (!device) {
     fprintf(stderr, "Error: No video device found.\n");
@@ -198,58 +208,58 @@ void cameraInit(camera *cam, int width, int height) {
 
   id AVCaptureDeviceInput = (id)objc_getClass("AVCaptureDeviceInput");
   id input = ((id_msg_id_ptr_t)objc_msgSend)(
-    AVCaptureDeviceInput,
-    sel_registerName("deviceInputWithDevice:error:"),
-    device,
-    NULL
-  );
+      AVCaptureDeviceInput,
+      sel_registerName("deviceInputWithDevice:error:"),
+      device,
+      NULL
+      );
   ((void_msg_ptr_t)objc_msgSend)(
     session,
     sel_registerName("addInput:"),
     input
-  );
+    );
 
   // Setup Output
   id AVCaptureVideoDataOutput = (id)objc_getClass("AVCaptureVideoDataOutput");
   id output = ((id_msg_t)objc_msgSend)(
-    AVCaptureVideoDataOutput,
-    sel_registerName("alloc")
-  );
+      AVCaptureVideoDataOutput,
+      sel_registerName("alloc")
+      );
   output = ((id_msg_t)objc_msgSend)(output, sel_registerName("init"));
 
   // Set Pixel Format to BGRA (kCVPixelFormatType_32BGRA = 'BGRA' = 1111970369)
   id NSNumber = (id)objc_getClass("NSNumber");
   id pixelFormat = ((id_msg_ptr_t)objc_msgSend)(
-    NSNumber,
-    sel_registerName("numberWithInt:"),
-    (void*)1111970369
-  );
+      NSNumber,
+      sel_registerName("numberWithInt:"),
+      (void*)1111970369
+      );
   id NSDictionary = (id)objc_getClass("NSDictionary");
   id const kCVPixelBufferPixelFormatTypeKey = ((id_msg_str_t)objc_msgSend)(
-    (id)objc_getClass("NSString"),
-    sel_registerName("stringWithUTF8String:"),
-    "PixelFormatType"
-  );
+      (id)objc_getClass("NSString"),
+      sel_registerName("stringWithUTF8String:"),
+      "PixelFormatType"
+      );
 
   id settings = ((id (*)(id, SEL, id, id))objc_msgSend)(
-    NSDictionary,
-    sel_registerName("dictionaryWithObject:forKey:"),
-    pixelFormat,
-    kCVPixelBufferPixelFormatTypeKey
-  );
+      NSDictionary,
+      sel_registerName("dictionaryWithObject:forKey:"),
+      pixelFormat,
+      kCVPixelBufferPixelFormatTypeKey
+      );
 
   ((void_msg_ptr_t)objc_msgSend)(output,
-                                  sel_registerName("setVideoSettings:"),
-                                  settings);
+    sel_registerName("setVideoSettings:"),
+    settings);
 
   // Connect Delegate
   id delegateInstance = ((id_msg_t)objc_msgSend)(
-    (id)((id_msg_t)objc_msgSend)(
-      (id)CaptureDelegate,
-      sel_registerName("alloc")
-    ),
-    sel_registerName("init")
-  );
+      (id)((id_msg_t)objc_msgSend)(
+        (id)CaptureDelegate,
+        sel_registerName("alloc")
+        ),
+      sel_registerName("init")
+      );
 
   // We need a dispatch queue
   id dispatchQueue = (id)dispatch_queue_create("camera_queue", NULL);
@@ -258,13 +268,13 @@ void cameraInit(camera *cam, int width, int height) {
     sel_registerName("setSampleBufferDelegate:queue:"),
     delegateInstance,
     dispatchQueue
-  );
+    );
 
   ((void_msg_ptr_t)objc_msgSend)(
     session,
     sel_registerName("addOutput:"),
     output
-  );
+    );
 
   // Save session
   cam->internal = session;
@@ -274,8 +284,8 @@ void cameraInit(camera *cam, int width, int height) {
 void cameraStart(camera *cam) {
   id session = (id)cam->internal;
   ((void_msg_ptr_t)objc_msgSend)(session,
-                                  sel_registerName("startRunning"),
-                                  NULL);
+    sel_registerName("startRunning"),
+    NULL);
   cam->isRunning = 1;
 }
 
