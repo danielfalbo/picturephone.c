@@ -27,7 +27,7 @@ USAGE
 
   To get started, you can see yourself in the mirror by running
 
-    picturephone --mirror
+    picturephone --mode mirror
 
   which will activate the default webcam of your laptop and render your
   text-based video feedback in your terminal. You can also
@@ -40,26 +40,64 @@ USAGE
 
   without any arguments to launch a comfortable TUI.
 
-TODO
+  LOCALHOST EXAMPLE
 
-    - [ ] Better README.
+    Alice hosts the server using real webcam:
 
-        - [ ] SSH/Local tunnel example.
+      picturephone --role server --port 3000
 
-        - [ ] Section: Communication protocol.
+    Bob connects to localhost using a dummy camera
 
-    - [ ] Ask [accept | reject] before letting your friend in the call.
+      picturephone --role client --ip 127.0.0.1 --port 3000 \
+                    --camera dummy-bounce
 
-    - [ ] Support multiple people calls
+    to avoid fighting for the webcam lock.
 
-    - [ ] Implement encryption of the data transmitted. Nothing standard, our
-          own implementation.
+  LOCAL TUNNEL EXAMPLE
 
-    - [ ] INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
-          Consider optimizing the data transmission protocol to be incremental
-          so it uses less data, and then is encoded/decoded on clients.
-          Instead of sending the entirety of every frame with redundant data
-          from the previous frame. Similarly, the terminal should only update
-          the changed cells, not the entire picture.
+    Alice hosts the server locally:
 
-    - [ ] Support linux and bsd webcam interfaces.
+      picturephone --role server --port 3000
+
+    Alice exposes her port 3000 via ngrok TCP (requires an ngrok account):
+
+      ngrok tcp 3000
+
+    Ngrok will display a forwarding address like "tcp://0.tcp.ngrok.io:12345".
+
+    Bob connects to that address
+
+      picturephone --role client \
+                    --ip $(dig +short 0.tcp.ngrok.io  | head -n 1) \
+                    --port 12345 \
+                    --camera dummy-gradient
+
+    and now they're communicating over the internet!
+
+  SSH EXAMPLE
+
+    TODO...
+
+COMMUNICATION PROTOCOL
+
+  TODO...
+
+TODOs
+
+  - Draw a box around the picture-in-picture.
+
+  - Ask [accept | reject] before letting your friend(s) in the call.
+
+  - Support multiple people in the same room
+
+  - Implement encryption of the data transmitted.
+        Nothing standard, our own implementation.
+
+  - INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION:
+    Consider optimizing the data transmission protocol to be incremental
+    so it uses less network data, and then is encoded/decoded on clients.
+    Instead of sending the entirety of every frame with redundant data
+    from the previous frame, just send what changed. Similarly, the terminal
+    should only update the changed cells, not the entire picture.
+
+  - Support linux and bsd webcam interfaces.
