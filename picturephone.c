@@ -1125,7 +1125,7 @@ void renderBufferBGRA(struct abuf *ab, unsigned char *pixels, int w, int h,
   int min = 255, max = 0;
   int d_max = E.density_count - 1;
 
-  /* Pass 1: Normalization */
+  /* Normalization */
   for (int y = 0; y < target_h; y++) {
     for (int x = 0; x < target_w; x++) {
       int ix = mirror ? ((target_w-1-x)*w)/target_w : (x*w)/target_w;
@@ -1146,7 +1146,7 @@ void renderBufferBGRA(struct abuf *ab, unsigned char *pixels, int w, int h,
   int range = max - min;
   if (range == 0) range = 1;
 
-  /* Pass 2: Rendering */
+  /* Rendering */
   for (int y = 0; y < target_h; y++) {
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", y_off + y + 1, x_off + 1);
