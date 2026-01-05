@@ -1075,25 +1075,43 @@ void renderBuffer(struct abuf *ab, unsigned char *pixels, int w, int h,
     int x_off, int y_off, int target_w, int target_h, int mirror) {
   if (target_w <= 0 || target_h <= 0) return;
 
+  int min = 255, max = 0;
+  int d_max = E.density_count - 1;
+
+  /* Normalization (Find min/max) */
+  for (int y = 0; y < target_h; y++) {
+    for (int x = 0; x < target_w; x++) {
+      int ix = mirror ? ((target_w-1-x)*w)/target_w : (x*w)/target_w;
+      int iy = (y*h)/target_h;
+      if (ix >= w) ix = w-1;
+      if (iy >= h) iy = h-1;
+
+      unsigned char v = pixels[iy * w + ix];
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  int range = max - min;
+  if (range == 0) range = 1;
+
+  /* Rendering */
   for (int y = 0; y < target_h; y++) {
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", y_off + y + 1, x_off + 1);
     abAppend(ab, buf, strlen(buf));
 
     for (int x = 0; x < target_w; x++) {
-      int ix = mirror ?
-                ((target_w - 1 - x) * w) / target_w :
-                (x * w) / target_w;
-      int iy = (y * h) / target_h;
+      int ix = mirror ? ((target_w-1-x)*w)/target_w : (x*w)/target_w;
+      int iy = (y*h)/target_h;
+      if (ix >= w) ix = w-1;
+      if (iy >= h) iy = h-1;
 
-      if (ix >= w) ix = w - 1;
-      if (iy >= h) iy = h - 1;
-
-      unsigned char intensity = pixels[iy * w + ix];
+      unsigned char v = pixels[iy * w + ix];
       if (E.density_count > 0) {
-        int char_idx = (intensity * (E.density_count - 1)) / 255;
-        char *glyph = E.density_glyphs[char_idx];
-        abAppend(ab, glyph, strlen(glyph));
+        int idx = (v - min) * d_max / range;
+        if (idx < 0) idx = 0;
+        if (idx > d_max) idx = d_max;
+        abAppend(ab, E.density_glyphs[idx], strlen(E.density_glyphs[idx]));
       }
     }
   }
@@ -1104,30 +1122,53 @@ void renderBufferBGRA(struct abuf *ab, unsigned char *pixels, int w, int h,
     int x_off, int y_off, int target_w, int target_h, int mirror) {
   if (target_w <= 0 || target_h <= 0) return;
 
+  int min = 255, max = 0;
+  int d_max = E.density_count - 1;
+
+  /* Pass 1: Normalization */
+  for (int y = 0; y < target_h; y++) {
+    for (int x = 0; x < target_w; x++) {
+      int ix = mirror ? ((target_w-1-x)*w)/target_w : (x*w)/target_w;
+      int iy = (y*h)/target_h;
+      if (ix >= w) ix = w-1;
+      if (iy >= h) iy = h-1;
+
+      int offset = (iy * w + ix) * 4;
+      unsigned char r = pixels[offset+2];
+      unsigned char g = pixels[offset+1];
+      unsigned char b = pixels[offset+0];
+      unsigned char v = (r*77 + g*150 + b*29) >> 8; // Luminance
+
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  int range = max - min;
+  if (range == 0) range = 1;
+
+  /* Pass 2: Rendering */
   for (int y = 0; y < target_h; y++) {
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", y_off + y + 1, x_off + 1);
     abAppend(ab, buf, strlen(buf));
 
     for (int x = 0; x < target_w; x++) {
-      int ix = mirror ?
-                ((target_w - 1 - x) * w) / target_w :
-                (x * w) / target_w;
-      int iy = (y * h) / target_h;
-
-      if (ix >= w) ix = w - 1;
-      if (iy >= h) iy = h - 1;
+      int ix = mirror ? ((target_w-1-x)*w)/target_w : (x*w)/target_w;
+      int iy = (y*h)/target_h;
+      if (ix >= w) ix = w-1;
+      if (iy >= h) iy = h-1;
 
       int offset = (iy * w + ix) * 4;
-      unsigned char b = pixels[offset + 0];
-      unsigned char g = pixels[offset + 1];
-      unsigned char r = pixels[offset + 2];
-      unsigned char intensity = (r+g+b)/3;
+      unsigned char r = pixels[offset+2];
+      unsigned char g = pixels[offset+1];
+      unsigned char b = pixels[offset+0];
+      unsigned char v = (r*77 + g*150 + b*29) >> 8;
 
       if (E.density_count > 0) {
-        int char_idx = (intensity * (E.density_count - 1)) / 255;
-        char *glyph = E.density_glyphs[char_idx];
-        abAppend(ab, glyph, strlen(glyph));
+        int idx = (v - min) * d_max / range;
+        if (idx < 0) idx = 0;
+        if (idx > d_max) idx = d_max;
+        abAppend(ab, E.density_glyphs[idx], strlen(E.density_glyphs[idx]));
       }
     }
   }
@@ -1309,7 +1350,7 @@ long long current_timestamp(void) {
 }
 
 void redrawNetworkView(camera *cam, unsigned char *peer_pixels,
-                        int p_w, int p_h) {
+    int p_w, int p_h) {
   struct abuf ab = ABUF_INIT;
   abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
   abAppend(&ab,"\x1b[H",3); /* Go home. */
@@ -1317,7 +1358,7 @@ void redrawNetworkView(camera *cam, unsigned char *peer_pixels,
   if (E.view_mode == VIEW_PIP) {
     /* Render Peer Fullscreen */
     renderBuffer(&ab, peer_pixels, p_w, p_h, 0, 0,
-                  E.screencols, E.screenrows, 1);
+        E.screencols, E.screenrows, 1);
 
     /* Render Self Small (bottom right) */
     frame my_frame;
@@ -1403,8 +1444,8 @@ void runNetworkMode(camera *cam) {
 
       // Notify Peer
       unsigned char conf_pkt[3] = {'C',
-                                  (unsigned char)my_w,
-                                  (unsigned char)my_h};
+        (unsigned char)my_w,
+        (unsigned char)my_h};
       write(sockfd, conf_pkt, 3);
     }
 
@@ -1470,7 +1511,7 @@ void runNetworkMode(camera *cam) {
               last_peer_h = p_h;
               memcpy(last_peer_pixels, recv_buffer + 3, p_w * p_h);
               redrawNetworkView(cam, last_peer_pixels,
-                                  last_peer_w, last_peer_h);
+                  last_peer_w, last_peer_h);
             } else {
               // Incomplete picture packet, wait for more data
               break;
@@ -1519,7 +1560,7 @@ void runNetworkMode(camera *cam) {
             unsigned char g = frame.pixels[offset + 1];
             unsigned char r = frame.pixels[offset + 2];
 
-            net_buffer[y * w + x] = (r+g+b)/3;
+            net_buffer[y * w + x] = (r*77 + g*150 + b*29) >> 8;
           }
         }
 
@@ -1780,7 +1821,7 @@ int main(int argc, char **argv) {
 
   char *mode_str = (E.mode == MODE_MIRROR) ? "mirror" : "network";
   editorSetStatusMessage("HELP: Ctrl-C = quit | 'v' = toggle view | mode: %s",
-                          mode_str);
+      mode_str);
 
   if (E.mode == MODE_MIRROR) {
     runMirrorMode(&cam);
