@@ -29,28 +29,18 @@ USAGE
 
 TODO
 
-  1. UI
-
     - [ ] Ask [accept | reject] before letting your friend in the call.
 
-  2. GROUP MODE: 3+ people call
-
-    - [ ] Support multiple people calls, consider both a peer-to-peer solution
-          (braindead simple, no raft) and centralizing the call (redis?).
-
-  3. ENCRYPTION
+    - [ ] Support multiple people calls
 
     - [ ] Implement encryption of the data transmitted. Nothing standard, our
           own implementation.
 
-  4. INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
-
-    - [ ] Consider optimizing the data transmission protocol to be incremental
+    - [ ] INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
+          Consider optimizing the data transmission protocol to be incremental
           so it uses less data, and then is encoded/decoded on clients.
           Instead of sending the entirety of every frame with redundant data
           from the previous frame. Similarly, the terminal should only update
           the changed cells, not the entire picture.
-
-  5. PORTABILITY
 
     - [ ] Support linux and bsd webcam interfaces.
