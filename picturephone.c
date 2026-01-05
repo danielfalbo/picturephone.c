@@ -8,25 +8,25 @@
  *
  * */
 
+#include <time.h>
+#include <netdb.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#include <termios.h>
-#include <errno.h>
-#include <time.h>
-#include <stdarg.h>
 #include <signal.h>
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/select.h>
+#include <stdarg.h>
+#include <unistd.h>
 #include <pthread.h>
+#include <termios.h>
+#include <pthread.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
 #include <arpa/inet.h>
-#include <netdb.h>
-#include <fcntl.h>
-#include <ctype.h>
+#include <sys/select.h>
 
 /* --- WEBCAM INTERFACE -------------------------------------------
  * Generic interfaces and data structures.
@@ -49,7 +49,22 @@ typedef struct {
   /* OS will write camera data somewhere, and we will be reading it from the
    * same place: we use a lock so only one of us uses it at any given time. */
   pthread_mutex_t lock;
+
+  /* Dummy State */
+  struct {
+    int x, y;
+    int dx, dy;
+  } bounce;
+  unsigned int noise_seed;
 } camera;
+
+typedef struct {
+  char name[128];
+  char id[64];
+} CameraInfo;
+
+CameraInfo *enumerateCameras(void);
+void freeCameraList(CameraInfo *list);
 
 /* --- CONFIG --------------------------------------------------------------- */
 
@@ -71,7 +86,8 @@ struct editorConfig {
   int net_role;   /* NET_ROLE_SERVER or NET_ROLE_CLIENT */
   int net_port;
   char net_ip[64];
-  int dummy_mode;  /* If 1, use dummy camera */
+  char camera_target[64]; /* specific camera ID or "dummy-..." */
+  int list_cameras;       /* Check if we should list cameras and exit */
 
   /* Density String Config */
   char density_arg[256];
@@ -84,7 +100,7 @@ struct editorConfig {
 
 static struct editorConfig E;
 
-/* --- CONFIGURATION ENGINE ------------------------------------------------ */
+/* --- CONFIGURATION ENGINE ------------------------------------------------- */
 
 enum config_type {
   CONF_INT,
@@ -125,7 +141,8 @@ struct config_option config_table[] = {
   {"role", "Network Role", CONF_ENUM, &E.net_role, role_map},
   {"port", "Port", CONF_INT, &E.net_port, NULL},
   {"ip", "Remote IP", CONF_STRING, E.net_ip, NULL},
-  {"dummy", "Dummy Camera", CONF_BOOL, &E.dummy_mode, NULL},
+  {"camera", "Camera ID", CONF_STRING, E.camera_target, NULL},
+  {"list-cameras", "List Cameras", CONF_BOOL, &E.list_cameras, NULL},
   {"density-string", "Density String", CONF_STRING, E.density_arg, NULL},
   {NULL, NULL, 0, NULL, NULL}
 };
@@ -247,23 +264,145 @@ void cameraStart(camera *cam);
 // Returns 1 if a new frame was available, 0 otherwise.
 int cameraGetFrame(camera *cam, frame *outFrame);
 
+/* --- DUMMY CAMERA IMPLEMENTATION ------------------------------------------ */
+
+void appendDummyCameras(CameraInfo *list, int *idx) {
+  strcpy(list[*idx].name, "Dummy Gradient");
+  strcpy(list[*idx].id, "dummy-gradient");
+  (*idx)++;
+
+  strcpy(list[*idx].name, "Dummy Noise");
+  strcpy(list[*idx].id, "dummy-noise");
+  (*idx)++;
+
+  strcpy(list[*idx].name, "Dummy Bouncing Ball");
+  strcpy(list[*idx].id, "dummy-bounce");
+  (*idx)++;
+}
+
+int isDummyCamera(void) {
+  return strncmp(E.camera_target, "dummy-", 6) == 0;
+}
+
+int initDummyCamera(camera *cam) {
+  cam->bounce.x = 100;
+  cam->bounce.y = 100;
+  cam->bounce.dx = 8;
+  cam->bounce.dy = 8;
+  cam->noise_seed = 12345;
+
+  if (isDummyCamera()) {
+    cam->currentFrame.width = 640;
+    cam->currentFrame.height = 480;
+    cam->currentFrame.pixels = malloc(640 * 480 * 4);
+    cam->internal = NULL;
+    pthread_mutex_init(&cam->lock, NULL);
+    return 1;
+  }
+  return 0;
+}
+
+int startDummyCamera(camera *cam) {
+  if (isDummyCamera()) {
+    cam->isRunning = 1;
+    return 1;
+  }
+  return 0;
+}
+
+int getDummyFrame(camera *cam, frame *outFrame) {
+  if (!isDummyCamera()) return 0;
+
+  int w = cam->currentFrame.width;
+  int h = cam->currentFrame.height;
+  unsigned char *p = cam->currentFrame.pixels;
+
+  if (strcmp(E.camera_target, "dummy-noise") == 0) {
+    for (int i = 0; i < w * h * 4; i+=4) {
+      unsigned char val = rand_r(&cam->noise_seed) % 256;
+      p[i+0] = val; p[i+1] = val; p[i+2] = val;
+    }
+  } else if (strcmp(E.camera_target, "dummy-bounce") == 0) {
+    // Clear
+    memset(p, 0, w * h * 4);
+
+    // Update
+    cam->bounce.x += cam->bounce.dx;
+    cam->bounce.y += cam->bounce.dy;
+
+    int box = 80;
+    if (cam->bounce.x < 0 || cam->bounce.x + box >= w) {
+      cam->bounce.dx = -cam->bounce.dx;
+      cam->bounce.x += cam->bounce.dx;
+    }
+    if (cam->bounce.y < 0 || cam->bounce.y + box >= h) {
+      cam->bounce.dy = -cam->bounce.dy;
+      cam->bounce.y += cam->bounce.dy;
+    }
+
+    // Draw
+    for (int y = cam->bounce.y; y < cam->bounce.y + box; y++) {
+      for (int x = cam->bounce.x; x < cam->bounce.x + box; x++) {
+        if (x < 0 || x >= w || y < 0 || y >= h) continue;
+        int offset = (y * w + x) * 4;
+        p[offset+0] = 255;
+        p[offset+1] = 255;
+        p[offset+2] = 255;
+      }
+    }
+  } else {
+    // Default: Gradient
+    static int frame_counter = 0;
+    frame_counter++;
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        int offset = (y * w + x) * 4;
+        unsigned char val = (x + y + frame_counter) % 255;
+        p[offset + 0] = val; // B
+        p[offset + 1] = val; // G
+        p[offset + 2] = val; // R
+      }
+    }
+  }
+
+  outFrame->width = w;
+  outFrame->height = h;
+  outFrame->pixels = p;
+  return 1;
+}
+
 /* --- DEVICE/OS WEBCAM IMPLEMENTATIONS ------------------------------------- */
 
 #ifdef __linux__
 // TODO: Implement Linux/V4L2 support
 
+CameraInfo *enumerateCameras(void) {
+  CameraInfo *list = malloc(sizeof(CameraInfo) * 4);
+  int idx = 0;
+
+  appendDummyCameras(list, &idx);
+
+  list[idx].name[0] = '\0';
+  return list;
+}
+
+void freeCameraList(CameraInfo *list) {
+  free(list);
+}
+
 void cameraInit(camera *cam, int width, int height) {
-  (void)cam; (void)width; (void)height;
+  (void)width; (void)height;
+  if (initDummyCamera(cam)) return;
   // Stub
 }
 
 void cameraStart(camera *cam) {
-  (void)cam;
+  if (startDummyCamera(cam)) return;
   // Stub
 }
 
 int cameraGetFrame(camera *cam, frame *outFrame) {
-  (void)cam; (void)outFrame;
+  if (getDummyFrame(cam, outFrame)) return 1;
   // Stub
   return 0;
 }
@@ -284,9 +423,68 @@ typedef void (*void_msg_ptr_t)(id, SEL, void*);
 typedef void (*void_msg_id_id_t)(id, SEL, id, id);
 typedef id (*id_msg_id_t)(id, SEL, id);
 typedef id (*id_msg_id_ptr_t)(id, SEL, id, void*);
+typedef unsigned long (*ulong_msg_t)(id, SEL);
+typedef id (*id_msg_uint_t)(id, SEL, unsigned long);
 
 // Context to pass into the delegate callback
 static camera *global_cam_context = NULL;
+
+// -----------------------------------------------------------------------
+// Camera Enumeration
+// -----------------------------------------------------------------------
+CameraInfo *enumerateCameras(void) {
+  id AVCaptureDevice = (id)objc_getClass("AVCaptureDevice");
+  id NSString = (id)objc_getClass("NSString");
+
+  SEL s_stringWithUTF8String = sel_registerName("stringWithUTF8String:");
+  SEL s_devicesWithMediaType = sel_registerName("devicesWithMediaType:");
+  SEL s_count = sel_registerName("count");
+  SEL s_objectAtIndex = sel_registerName("objectAtIndex:");
+  SEL s_localizedName = sel_registerName("localizedName");
+  SEL s_uniqueID = sel_registerName("uniqueID");
+  SEL s_UTF8String = sel_registerName("UTF8String");
+
+  id mediaType = ((id_msg_str_t)objc_msgSend)(NSString,
+      s_stringWithUTF8String, "vide");
+  id devices = ((id_msg_id_t)objc_msgSend)(AVCaptureDevice,
+      s_devicesWithMediaType, mediaType);
+
+  unsigned long count = 0;
+  if (devices) {
+    count = ((ulong_msg_t)objc_msgSend)(devices, s_count);
+  }
+
+  // Allocate list: Real cameras + 3 dummies + 1 terminator
+  CameraInfo *list = malloc(sizeof(CameraInfo) * (count + 4));
+
+  int idx = 0;
+  for (unsigned long i = 0; i < count; i++) {
+    id dev = ((id_msg_uint_t)objc_msgSend)(devices, s_objectAtIndex, i);
+    id name = ((id_msg_t)objc_msgSend)(dev, s_localizedName);
+    id uid = ((id_msg_t)objc_msgSend)(dev, s_uniqueID);
+
+    const char *nameStr = ((const char* (*)(id, SEL))objc_msgSend)(name,
+        s_UTF8String);
+    const char *uidStr = ((const char* (*)(id, SEL))objc_msgSend)(uid,
+        s_UTF8String);
+
+    strncpy(list[idx].name, nameStr, 127);
+    strncpy(list[idx].id, uidStr, 63);
+    idx++;
+  }
+
+  // Add Dummies
+  appendDummyCameras(list, &idx);
+
+  // Terminator
+  list[idx].name[0] = '\0';
+
+  return list;
+}
+
+void freeCameraList(CameraInfo *list) {
+  free(list);
+}
 
 // -----------------------------------------------------------------------
 // The Delegate: This C function acts as the Objective-C method:
@@ -338,15 +536,7 @@ void captureOutput_didOutputSampleBuffer_fromConnection(id self, SEL _cmd,
 void cameraInit(camera *cam, int width, int height) {
   (void)width; (void)height;
 
-  if (E.dummy_mode) {
-    // Initialize dummy camera
-    cam->currentFrame.width = 640;
-    cam->currentFrame.height = 480;
-    cam->currentFrame.pixels = malloc(640 * 480 * 4); // RGBA
-    cam->internal = NULL;
-    pthread_mutex_init(&cam->lock, NULL);
-    return;
-  }
+  if (initDummyCamera(cam)) return;
 
   // Setup global context for the static callback
   global_cam_context = cam;
@@ -388,20 +578,36 @@ void cameraInit(camera *cam, int width, int height) {
 
   // Get Input Device
   id AVCaptureDevice = (id)objc_getClass("AVCaptureDevice");
-  id mediaType = ((id_msg_str_t)objc_msgSend)(
-      (id)objc_getClass("NSString"),
-      sel_registerName("stringWithUTF8String:"),
-      "vide" // "vide" = AVMediaTypeVideo
-      );
+  id device = NULL;
 
-  id device = ((id_msg_id_t)objc_msgSend)(
-      AVCaptureDevice,
-      sel_registerName("defaultDeviceWithMediaType:"),
-      mediaType
-      );
+  if (strlen(E.camera_target) == 0 || strcmp(E.camera_target, "default") == 0) {
+    id mediaType = ((id_msg_str_t)objc_msgSend)(
+        (id)objc_getClass("NSString"),
+        sel_registerName("stringWithUTF8String:"),
+        "vide" // "vide" = AVMediaTypeVideo
+        );
+
+    device = ((id_msg_id_t)objc_msgSend)(
+        AVCaptureDevice,
+        sel_registerName("defaultDeviceWithMediaType:"),
+        mediaType
+        );
+  } else {
+    // By ID
+    id uid = ((id_msg_str_t)objc_msgSend)(
+        (id)objc_getClass("NSString"),
+        sel_registerName("stringWithUTF8String:"),
+        E.camera_target
+        );
+    device = ((id_msg_id_t)objc_msgSend)(
+        AVCaptureDevice,
+        sel_registerName("deviceWithUniqueID:"),
+        uid
+        );
+  }
 
   if (!device) {
-    fprintf(stderr, "Error: No video device found.\n");
+    fprintf(stderr, "Error: Video device not found.\n");
     exit(1);
   }
 
@@ -481,10 +687,7 @@ void cameraInit(camera *cam, int width, int height) {
 }
 
 void cameraStart(camera *cam) {
-  if (E.dummy_mode) {
-    cam->isRunning = 1;
-    return;
-  }
+  if (startDummyCamera(cam)) return;
   id session = (id)cam->internal;
   ((void_msg_ptr_t)objc_msgSend)(session,
     sel_registerName("startRunning"),
@@ -493,30 +696,7 @@ void cameraStart(camera *cam) {
 }
 
 int cameraGetFrame(camera *cam, frame *outFrame) {
-  if (E.dummy_mode) {
-    static int frame_counter = 0;
-    frame_counter++;
-    int w = cam->currentFrame.width;
-    int h = cam->currentFrame.height;
-    unsigned char *p = cam->currentFrame.pixels;
-
-    // Generate a simple moving pattern
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        int offset = (y * w + x) * 4;
-        // Moving gradient
-        unsigned char val = (x + y + frame_counter) % 255;
-        p[offset + 0] = val; // B
-        p[offset + 1] = val; // G
-        p[offset + 2] = val; // R
-      }
-    }
-
-    outFrame->width = w;
-    outFrame->height = h;
-    outFrame->pixels = p;
-    return 1;
-  }
+  if (getDummyFrame(cam, outFrame)) return 1;
 
   pthread_mutex_lock(&cam->lock);
   if (cam->currentFrame.pixels) {
@@ -855,7 +1035,8 @@ void initEditor(void) {
   E.mode = MODE_NETWORK;
   E.net_role = NET_ROLE_SERVER;
   E.net_port = 3000;
-  E.dummy_mode = 0;
+  E.list_cameras = 0;
+  E.camera_target[0] = '\0';
   strcpy(E.net_ip, "127.0.0.1");
 
   E.density_glyphs = NULL;
@@ -910,27 +1091,9 @@ void renderAsciiFrame(struct abuf *ab, unsigned char *pixels, int w, int h) {
 
 /* --- NETWORK MODE --------------------------------------------------------- */
 
-#define NET_WIDTH 80
-#define NET_HEIGHT 60
+// Downscale and grayscale conversion for network transport (Legacy/Unused)
+// void resizeAndGray(frame *in, unsigned char *out) ...
 
-// Downscale and grayscale conversion for network transport
-// out_buffer must be NET_WIDTH * NET_HEIGHT bytes
-void resizeAndGray(frame *in, unsigned char *out) {
-  for (int y = 0; y < NET_HEIGHT; y++) {
-    for (int x = 0; x < NET_WIDTH; x++) {
-      // Map Transport Coord (x,y) -> Image Coord (ix, iy)
-      int ix = (x * in->width) / NET_WIDTH;
-      int iy = (y * in->height) / NET_HEIGHT;
-
-      int offset = (iy * in->width + ix) * 4;
-      unsigned char b = in->pixels[offset + 0];
-      unsigned char g = in->pixels[offset + 1];
-      unsigned char r = in->pixels[offset + 2];
-
-      out[y * NET_WIDTH + x] = (r+g+b)/3;
-    }
-  }
-}
 
 int tcpListen(int port) {
   int server_fd, new_socket;
@@ -1109,9 +1272,24 @@ void runNetworkMode(camera *cam) {
 
   initTerminal();
 
-  unsigned char net_buffer[NET_WIDTH * NET_HEIGHT];
-  unsigned char recv_buffer[NET_WIDTH * NET_HEIGHT + 3]; // +3 for header
+  unsigned char *net_buffer = malloc(65536); // Max 255*255 + safety
+  unsigned char *recv_buffer = malloc(132000); // 2 * max frame + safety
   int recv_len = 0;
+
+  // State: Resolution I want to receive (My Terminal)
+  int my_w = E.screencols;
+  int my_h = E.screenrows;
+  if (my_w > 255) my_w = 255;
+  if (my_h > 255) my_h = 255;
+
+  // State: Resolution Peer wants to receive (Their Terminal)
+  // Default to 80x60 until we hear otherwise
+  int peer_w = 80;
+  int peer_h = 60;
+
+  // Send initial configuration to peer
+  unsigned char init_conf[3] = {'C', (unsigned char)my_w, (unsigned char)my_h};
+  write(sockfd, init_conf, 3);
 
   long long next_frame_time = current_timestamp();
 
@@ -1119,6 +1297,21 @@ void runNetworkMode(camera *cam) {
     long long now = current_timestamp();
     long long wait_ms = next_frame_time - now;
     if (wait_ms < 0) wait_ms = 0;
+
+    // Check for Window Resize (I am the source of truth for what I want to see)
+    if (E.screencols != my_w || E.screenrows != my_h) {
+      // Clamp
+      int new_w = E.screencols > 255 ? 255 : E.screencols;
+      int new_h = E.screenrows > 255 ? 255 : E.screenrows;
+
+      // Update state
+      my_w = new_w;
+      my_h = new_h;
+
+      // Notify Peer
+      unsigned char conf_pkt[3] = {'C', (unsigned char)my_w, (unsigned char)my_h};
+      write(sockfd, conf_pkt, 3);
+    }
 
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -1144,7 +1337,7 @@ void runNetworkMode(camera *cam) {
     // Handle Network Receive
     if (activity > 0 && FD_ISSET(sockfd, &readfds)) {
       int n = read(sockfd, recv_buffer + recv_len,
-          sizeof(recv_buffer) - recv_len);
+          131000 - recv_len);
       if (n == 0) {
         // Connection closed
         editorSetStatusMessage("Connection closed by peer.");
@@ -1152,25 +1345,52 @@ void runNetworkMode(camera *cam) {
       } else if (n > 0) {
         recv_len += n;
 
-        // Check if we have a full packet
-        // Packet: 'P' (1) + W (1) + H (1) + Data (W*H)
-        int expected = 3 + NET_WIDTH * NET_HEIGHT;
+        // Process all complete packets in buffer
+        while (recv_len >= 3) {
+          unsigned char type = recv_buffer[0];
+          int p_w = recv_buffer[1];
+          int p_h = recv_buffer[2];
 
-        if (recv_len >= expected) {
-          // Verify Header
-          if (recv_buffer[0] == 'P' &&
-              recv_buffer[1] == NET_WIDTH &&
-              recv_buffer[2] == NET_HEIGHT) {
-            struct abuf ab = ABUF_INIT;
-            renderAsciiFrame(&ab, recv_buffer + 3, NET_WIDTH, NET_HEIGHT);
-            write(STDOUT_FILENO, ab.b, ab.len);
-            abFree(&ab);
+          int packet_size = 0;
+
+          if (type == 'C') {
+            packet_size = 3;
+            if (recv_len >= packet_size) {
+              // Handle Config
+              if (p_w > 0 && p_h > 0) {
+                peer_w = p_w;
+                peer_h = p_h;
+              }
+            }
+          } else if (type == 'P') {
+            packet_size = 3 + (p_w * p_h);
+            if (recv_len >= packet_size) {
+              // Handle Picture
+              struct abuf ab = ABUF_INIT;
+              renderAsciiFrame(&ab, recv_buffer + 3, p_w, p_h);
+              write(STDOUT_FILENO, ab.b, ab.len);
+              abFree(&ab);
+            } else {
+              // Incomplete picture packet, wait for more data
+              break;
+            }
+          } else {
+            // Unknown packet / Desync?
+            // Recover by skipping 1 byte (ugly but "robust" enough for a toy)
+            memmove(recv_buffer, recv_buffer + 1, recv_len - 1);
+            recv_len--;
+            continue;
           }
 
-          // Shift remaining data
-          recv_len -= expected;
-          if (recv_len > 0) {
-            memmove(recv_buffer, recv_buffer + expected, recv_len);
+          // If we processed a packet, remove it from buffer
+          if (packet_size > 0 && recv_len >= packet_size) {
+            recv_len -= packet_size;
+            if (recv_len > 0) {
+              memmove(recv_buffer, recv_buffer + packet_size, recv_len);
+            }
+          } else {
+            // Incomplete packet (should have been caught above, but safety)
+            break;
           }
         }
       }
@@ -1181,16 +1401,42 @@ void runNetworkMode(camera *cam) {
     if (now >= next_frame_time) {
       frame frame;
       if (cameraGetFrame(cam, &frame)) {
-        resizeAndGray(&frame, net_buffer);
+        // Prepare Buffer for Resize (using peer's requested dimensions)
+        // resizeAndGray function assumes fixed NET_WIDTH, we need to adapt it.
+        // Or better: inline the logic here since we are changing it.
 
-        unsigned char header[3] = {'P', NET_WIDTH, NET_HEIGHT};
+        int w = peer_w;
+        int h = peer_h;
+        int size = w * h;
+
+        unsigned char header[3] = {'P', (unsigned char)w, (unsigned char)h};
+
+        // Manual Resize and Gray to buffer
+        // Note: net_buffer is large enough (65536)
+
+        for (int y = 0; y < h; y++) {
+          for (int x = 0; x < w; x++) {
+            int ix = (x * frame.width) / w;
+            int iy = (y * frame.height) / h;
+            int offset = (iy * frame.width + ix) * 4;
+
+            unsigned char b = frame.pixels[offset + 0];
+            unsigned char g = frame.pixels[offset + 1];
+            unsigned char r = frame.pixels[offset + 2];
+
+            net_buffer[y * w + x] = (r+g+b)/3;
+          }
+        }
+
         write(sockfd, header, 3);
-        write(sockfd, net_buffer, NET_WIDTH * NET_HEIGHT);
+        write(sockfd, net_buffer, size);
       }
       next_frame_time = now + 33; // Target ~30 FPS
     }
   }
 
+  free(net_buffer);
+  free(recv_buffer);
   close(sockfd);
 }
 
@@ -1409,13 +1655,23 @@ void configureTUI(void) {
     }
   }
 
-  const char *cam_opts[] = {
-    "[laptop]",
-    "[dummy]"
-  };
-  int cam = ttyMenu("Select Webcam:", cam_opts, 2);
-  E.dummy_mode = (cam == 1);
+  // Camera Selection
+  CameraInfo *list = enumerateCameras();
+  int count = 0;
+  while (list[count].name[0]) count++;
 
+  const char **cam_opts = malloc(sizeof(char*) * count);
+  for (int i = 0; i < count; i++) {
+    cam_opts[i] = list[i].name;
+  }
+
+  int cam_idx = ttyMenu("Select Camera:", cam_opts, count);
+  strcpy(E.camera_target, list[cam_idx].id);
+
+  free(cam_opts);
+  freeCameraList(list);
+
+  // Density Selection
   const char *density_opts[] = {
     "[ascii default]   (" DENSITY_ASCII_DEFAULT ")",
     "[unicode default] (" DENSITY_UNICODE_DEFAULT ")",
@@ -1440,6 +1696,17 @@ int main(int argc, char **argv) {
 
   if (argc > 1) {
     parse_config_args(argc, argv);
+
+    if (E.list_cameras) {
+      CameraInfo *list = enumerateCameras();
+      fprintf(stdout, "Available Cameras:\n");
+      for (int i = 0; list[i].name[0]; i++) {
+        fprintf(stdout, "  %s (ID: %s)\n", list[i].name, list[i].id);
+      }
+      freeCameraList(list);
+      exit(0);
+    }
+
     initTerminal();
     enableRawMode(STDIN_FILENO);
   } else {
