@@ -18,9 +18,7 @@
 #include <errno.h>
 #include <time.h>
 #include <stdarg.h>
-#include <fcntl.h>
 #include <signal.h>
-#include <ctype.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/select.h>
@@ -306,36 +304,15 @@ int cameraGetFrame(camera *cam, frame *outFrame) {
 
 /* --- LOW-LEVEL TERMINAL HANDLING ------------------------------------------ */
 
-#define KILO_VERSION "0.0.1"
-
 struct editorConfig;
-
-/* This structure represents a single line of the file we are editing. */
-typedef struct erow {
-  int idx;            /* Row index in the file, zero-based. */
-  int size;           /* Size of the row, excluding the null term. */
-  int rsize;          /* Size of the rendered row. */
-  char *chars;        /* Row content. */
-  char *render;       /* Row content "rendered" for screen (for TABs). */
-  unsigned char *hl;  /* Syntax highlight type for each character in render.*/
-  int hl_oc;          /* Row had open comment at end in last syntax highlight
-                         check. */
-} erow;
 
 #define MODE_MIRROR 0
 #define MODE_NETWORK 1
 
 struct editorConfig {
-  int cx,cy;  /* Cursor x and y position in characters */
-  int rowoff;     /* Offset of row displayed. */
-  int coloff;     /* Offset of column displayed. */
   int screenrows; /* Number of rows that we can show */
   int screencols; /* Number of cols that we can show */
-  int numrows;    /* Number of rows */
   int rawmode;    /* Is terminal raw mode enabled? */
-  erow *row;      /* Rows */
-  int dirty;      /* File modified but not saved. */
-  char *filename; /* Currently open filename */
   char statusmsg[80];
   time_t statusmsg_time;
   int mode;       /* Application mode */
@@ -570,8 +547,6 @@ void updateWindowSize(void) {
 
 void handleSigWinCh(int unused __attribute__((unused))) {
   updateWindowSize();
-  if (E.cy > E.screenrows) E.cy = E.screenrows - 1;
-  if (E.cx > E.screencols) E.cx = E.screencols - 1;
 }
 
 void editorSetStatusMessage(const char *fmt, ...) {
@@ -583,14 +558,6 @@ void editorSetStatusMessage(const char *fmt, ...) {
 }
 
 void initEditor(void) {
-  E.cx = 0;
-  E.cy = 0;
-  E.rowoff = 0;
-  E.coloff = 0;
-  E.numrows = 0;
-  E.row = NULL;
-  E.dirty = 0;
-  E.filename = NULL;
   E.mode = MODE_NETWORK;
   updateWindowSize();
   signal(SIGWINCH, handleSigWinCh);
