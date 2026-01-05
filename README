@@ -7,15 +7,6 @@ CREDITS AND INSPIRATION
   antirez/kilo
   ertdfgcvb/play.core
 
-INSTALL
-
-  On macOS you can just install this by running
-
-    brew tap danielfalbo/homebrew-formulae
-    brew install danielfalbo/picturephone
-
-  assuming you already have https://brew.sh.
-
 BUILD
 
   To build, just run
@@ -23,6 +14,14 @@ BUILD
     make
 
   and that's it.
+
+INSTALL
+
+  You can just install this by running
+
+    brew install danielfalbo/formulae/picturephone
+
+  assuming you already have https://brew.sh.
 
 MIRROR MODE
 
@@ -32,6 +31,14 @@ MIRROR MODE
 
   which will activate the default webcam of your laptop and render your
   text-based video feedback in your terminal.
+
+TERMINAL USER INTERFACE
+
+  Run
+
+    picturephone
+
+  without any arguments and it will launch a comfortable TUI.
 
 TODO
 
