@@ -1,5 +1,5 @@
 /*
- * Picturephone --- Ascii video-conferencing in the terminal.
+ * Picturephone --- Text-based video-conferencing in the terminal.
  * -----------------------------------------------------------------------
  *
  * Credits and inspiration: antirez/kilo, ertdfgcvb/play.core, kubrick/2001.
@@ -23,6 +23,10 @@
 #include <sys/time.h>
 #include <sys/select.h>
 #include <pthread.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <ctype.h>
 
 /* --- WEBCAM INTERFACE -------------------------------------------
  * Generic interfaces and data structures.
@@ -46,6 +50,192 @@ typedef struct {
    * same place: we use a lock so only one of us uses it at any given time. */
   pthread_mutex_t lock;
 } camera;
+
+/* --- CONFIG --------------------------------------------------------------- */
+
+#define MODE_MIRROR 0
+#define MODE_NETWORK 1
+
+#define NET_ROLE_SERVER 0
+#define NET_ROLE_CLIENT 1
+
+struct editorConfig {
+  int screenrows; /* Number of rows that we can show */
+  int screencols; /* Number of cols that we can show */
+  int rawmode;    /* Is terminal raw mode enabled? */
+  char statusmsg[80];
+  time_t statusmsg_time;
+
+  /* Configurable Parameters */
+  int mode;       /* MODE_MIRROR or MODE_NETWORK */
+  int net_role;   /* NET_ROLE_SERVER or NET_ROLE_CLIENT */
+  int net_port;
+  char net_ip[64];
+  int dummy_mode;  /* If 1, use dummy camera */
+
+  /* Density String Config */
+  char density_arg[256];
+  char **density_glyphs;
+  int density_count;
+};
+
+#define DENSITY_ASCII_DEFAULT " .x?A@"
+#define DENSITY_UNICODE_DEFAULT " .x?▂▄▆█"
+
+static struct editorConfig E;
+
+/* --- CONFIGURATION ENGINE ------------------------------------------------ */
+
+enum config_type {
+  CONF_INT,
+  CONF_STRING,
+  CONF_BOOL,   /* switch: 0 or 1 */
+  CONF_ENUM    /* selection from a list of named integers */
+};
+
+struct config_enum_map {
+  const char *name;
+  int val;
+};
+
+struct config_option {
+  const char *name;         /* CLI flag name (e.g., "port") */
+  const char *description;  /* Human readable description */
+  enum config_type type;
+  void *ptr;                /* Pointer to the variable in E */
+  struct config_enum_map *enum_map; /* For CONF_ENUM, NULL otherwise */
+};
+
+/* Enum Definitions */
+struct config_enum_map mode_map[] = {
+  {"mirror", MODE_MIRROR},
+  {"network", MODE_NETWORK},
+  {NULL, 0}
+};
+
+struct config_enum_map role_map[] = {
+  {"server", NET_ROLE_SERVER},
+  {"client", NET_ROLE_CLIENT},
+  {NULL, 0}
+};
+
+/* The Global Configuration Table */
+struct config_option config_table[] = {
+  {"mode", "App Mode", CONF_ENUM, &E.mode, mode_map},
+  {"role", "Network Role", CONF_ENUM, &E.net_role, role_map},
+  {"port", "Port", CONF_INT, &E.net_port, NULL},
+  {"ip", "Remote IP", CONF_STRING, E.net_ip, NULL},
+  {"dummy", "Dummy Camera", CONF_BOOL, &E.dummy_mode, NULL},
+  {"density-string", "Density String", CONF_STRING, E.density_arg, NULL},
+  {NULL, NULL, 0, NULL, NULL}
+};
+
+/* Helper: Get string representation of current ENUM value */
+const char *configGetEnumString(struct config_option *opt) {
+  int current_val = *(int *)opt->ptr;
+  for (int i = 0; opt->enum_map[i].name; i++) {
+    if (opt->enum_map[i].val == current_val) return opt->enum_map[i].name;
+  }
+  return "?";
+}
+
+/* Helper: Set ENUM value from string */
+int configSetEnum(struct config_option *opt, const char *val_str) {
+  for (int i = 0; opt->enum_map[i].name; i++) {
+    if (strcasecmp(opt->enum_map[i].name, val_str) == 0) {
+      *(int *)opt->ptr = opt->enum_map[i].val;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+void print_help(const char *program_name);
+
+/* Parse CLI arguments using the config table. */
+void parse_config_args(int argc, char **argv) {
+  for (int i = 1; i < argc; i++) {
+    int consumed = 0;
+    char *arg = argv[i];
+
+    /* Handle Help */
+    if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
+      print_help(argv[0]);
+      exit(0);
+    }
+
+    /* Check for flag prefix */
+    if (arg[0] != '-' || arg[1] != '-') {
+      fprintf(stderr, "Unknown argument: %s\n", arg);
+      exit(1);
+    }
+    char *flag = arg + 2; // Skip "--"
+
+    /* Search table */
+    for (int j = 0; config_table[j].name; j++) {
+      struct config_option *opt = &config_table[j];
+      if (strcmp(flag, opt->name) == 0) {
+        // Matched!
+        if (opt->type == CONF_BOOL) {
+          *(int *)opt->ptr = 1;
+          consumed = 1;
+        } else {
+          // Require next argument
+          if (i + 1 >= argc) {
+            fprintf(stderr, "Error: --%s requires an argument.\n", opt->name);
+            exit(1);
+          }
+          char *val = argv[++i];
+
+          if (opt->type == CONF_INT) {
+            *(int *)opt->ptr = atoi(val);
+          } else if (opt->type == CONF_STRING) {
+            strncpy((char *)opt->ptr, val, 63); // Safety? assumes 64 len buffer
+          } else if (opt->type == CONF_ENUM) {
+            if (!configSetEnum(opt, val)) {
+              fprintf(stderr, "Invalid value for --%s: %s\n", opt->name, val);
+              fprintf(stderr, "Valid options: ");
+              for(int k=0; opt->enum_map[k].name; k++)
+                fprintf(stderr, "%s ", opt->enum_map[k].name);
+              fprintf(stderr, "\n");
+              exit(1);
+            }
+          }
+          consumed = 1;
+        }
+        break;
+      }
+    }
+
+    if (!consumed) {
+      /* Legacy / Manual Fallback support could go here */
+      fprintf(stderr, "Unknown argument: %s\n", arg);
+      print_help(argv[0]);
+      exit(1);
+    }
+  }
+}
+
+/* Print dynamic help message */
+void print_help(const char *program_name) {
+  fprintf(stderr, "Usage: %s [options]\n\n", program_name);
+  fprintf(stderr, "Options:\n");
+  for (int i = 0; config_table[i].name; i++) {
+    struct config_option *opt = &config_table[i];
+    char hint[32] = "";
+    if (opt->type == CONF_INT) strcpy(hint, " <n>");
+    else if (opt->type == CONF_STRING) strcpy(hint, " <s>");
+    else if (opt->type == CONF_ENUM) strcpy(hint, " <val>");
+
+    fprintf(stderr, "  --%-16s %s%s\n", opt->name, opt->description, hint);
+    if (opt->type == CONF_ENUM) {
+      fprintf(stderr, "                         Values: ");
+      for(int k=0; opt->enum_map[k].name; k++)
+        fprintf(stderr, "%s ", opt->enum_map[k].name);
+      fprintf(stderr, "\n");
+    }
+  }
+}
 
 // Initialize the camera (select default device)
 void cameraInit(camera *cam, int width, int height);
@@ -147,6 +337,17 @@ void captureOutput_didOutputSampleBuffer_fromConnection(id self, SEL _cmd,
 
 void cameraInit(camera *cam, int width, int height) {
   (void)width; (void)height;
+
+  if (E.dummy_mode) {
+    // Initialize dummy camera
+    cam->currentFrame.width = 640;
+    cam->currentFrame.height = 480;
+    cam->currentFrame.pixels = malloc(640 * 480 * 4); // RGBA
+    cam->internal = NULL;
+    pthread_mutex_init(&cam->lock, NULL);
+    return;
+  }
+
   // Setup global context for the static callback
   global_cam_context = cam;
   pthread_mutex_init(&cam->lock, NULL);
@@ -280,6 +481,10 @@ void cameraInit(camera *cam, int width, int height) {
 }
 
 void cameraStart(camera *cam) {
+  if (E.dummy_mode) {
+    cam->isRunning = 1;
+    return;
+  }
   id session = (id)cam->internal;
   ((void_msg_ptr_t)objc_msgSend)(session,
     sel_registerName("startRunning"),
@@ -288,6 +493,31 @@ void cameraStart(camera *cam) {
 }
 
 int cameraGetFrame(camera *cam, frame *outFrame) {
+  if (E.dummy_mode) {
+    static int frame_counter = 0;
+    frame_counter++;
+    int w = cam->currentFrame.width;
+    int h = cam->currentFrame.height;
+    unsigned char *p = cam->currentFrame.pixels;
+
+    // Generate a simple moving pattern
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        int offset = (y * w + x) * 4;
+        // Moving gradient
+        unsigned char val = (x + y + frame_counter) % 255;
+        p[offset + 0] = val; // B
+        p[offset + 1] = val; // G
+        p[offset + 2] = val; // R
+      }
+    }
+
+    outFrame->width = w;
+    outFrame->height = h;
+    outFrame->pixels = p;
+    return 1;
+  }
+
   pthread_mutex_lock(&cam->lock);
   if (cam->currentFrame.pixels) {
     // Shallow copy for demo. Could deep copy if processing slowly
@@ -303,22 +533,6 @@ int cameraGetFrame(camera *cam, frame *outFrame) {
 #endif
 
 /* --- LOW-LEVEL TERMINAL HANDLING ------------------------------------------ */
-
-struct editorConfig;
-
-#define MODE_MIRROR 0
-#define MODE_NETWORK 1
-
-struct editorConfig {
-  int screenrows; /* Number of rows that we can show */
-  int screencols; /* Number of cols that we can show */
-  int rawmode;    /* Is terminal raw mode enabled? */
-  char statusmsg[80];
-  time_t statusmsg_time;
-  int mode;       /* Application mode */
-};
-
-static struct editorConfig E;
 
 enum KEY_ACTION{
   KEY_NULL = 0,       /* NULL */
@@ -557,8 +771,97 @@ void editorSetStatusMessage(const char *fmt, ...) {
   E.statusmsg_time = time(NULL);
 }
 
+/* --- DENSITY STRING HANDLING ---------------------------------------------- */
+
+int get_utf8_char_len(unsigned char c) {
+  if ((c & 0x80) == 0) return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 1; // Fallback / Invalid
+}
+
+int isUnicodeSupported(void) {
+  char *lang = getenv("LANG");
+  if (lang && strstr(lang, "UTF-8")) return 1;
+  if (lang && strstr(lang, "utf8")) return 1;
+
+  char *lc = getenv("LC_ALL");
+  if (lc && strstr(lc, "UTF-8")) return 1;
+  if (lc && strstr(lc, "utf8")) return 1;
+
+  return 0;
+}
+
+void freeDensityGlyphs(void) {
+  if (E.density_glyphs) {
+    for (int i = 0; i < E.density_count; i++) {
+      free(E.density_glyphs[i]);
+    }
+    free(E.density_glyphs);
+    E.density_glyphs = NULL;
+    E.density_count = 0;
+  }
+}
+
+void setDensityString(const char *str) {
+  freeDensityGlyphs();
+
+  // First pass: count glyphs
+  int count = 0;
+  const char *p = str;
+  while (*p) {
+    int len = get_utf8_char_len((unsigned char)*p);
+    p += len;
+    count++;
+  }
+
+  if (count == 0) return; // Should not happen with defaults
+
+  E.density_count = count;
+  E.density_glyphs = malloc(sizeof(char*) * count);
+
+  // Second pass: store glyphs
+  p = str;
+  for (int i = 0; i < count; i++) {
+    int len = get_utf8_char_len((unsigned char)*p);
+    E.density_glyphs[i] = malloc(len + 1);
+    memcpy(E.density_glyphs[i], p, len);
+    E.density_glyphs[i][len] = '\0';
+    p += len;
+  }
+}
+
+void resolveDensityConfig(void) {
+  if (strlen(E.density_arg) > 0) {
+    if (strcmp(E.density_arg, "ascii-default") == 0) {
+      setDensityString(DENSITY_ASCII_DEFAULT);
+    } else if (strcmp(E.density_arg, "unicode-default") == 0) {
+      setDensityString(DENSITY_UNICODE_DEFAULT);
+    } else {
+      setDensityString(E.density_arg);
+    }
+  } else {
+    // Auto-detect
+    if (isUnicodeSupported()) {
+      setDensityString(DENSITY_UNICODE_DEFAULT);
+    } else {
+      setDensityString(DENSITY_ASCII_DEFAULT);
+    }
+  }
+}
+
 void initEditor(void) {
   E.mode = MODE_NETWORK;
+  E.net_role = NET_ROLE_SERVER;
+  E.net_port = 3000;
+  E.dummy_mode = 0;
+  strcpy(E.net_ip, "127.0.0.1");
+
+  E.density_glyphs = NULL;
+  E.density_count = 0;
+  E.density_arg[0] = '\0';
+
   updateWindowSize();
   signal(SIGWINCH, handleSigWinCh);
 }
@@ -570,16 +873,325 @@ void initTerminal(void) {
 
 /* --- VIDEO TO GRAYSCALE TO ASCII ------------------------------------------ */
 
-#define DENSITY_STR " .x?A@"
-#define DENSITY_LEN (sizeof(DENSITY_STR) - 1)
+// Helper to convert an image buffer to ASCII in the abuf
+void renderAsciiFrame(struct abuf *ab, unsigned char *pixels, int w, int h) {
+  int rows = E.screenrows;
+  int cols = E.screencols;
+
+  if (rows <= 0 || cols <= 0) return;
+
+  abAppend(ab,"\x1b[?25l",6); /* Hide cursor. */
+  abAppend(ab,"\x1b[H",3); /* Go home. */
+
+  for (int y = 0; y < rows; y++) {
+    for (int x = 0; x < cols; x++) {
+      int ix = ((cols - 1 - x) * w) / cols;
+      int iy = (y * h) / rows;
+
+      if (ix >= w) ix = w - 1;
+      if (iy >= h) iy = h - 1;
+
+      unsigned char intensity = pixels[iy * w + ix];
+      if (E.density_count > 0) {
+        int char_idx = (intensity * (E.density_count - 1)) / 255;
+        char *glyph = E.density_glyphs[char_idx];
+        abAppend(ab, glyph, strlen(glyph));
+      }
+    }
+    abAppend(ab, "\r\n", 2);
+  }
+
+  // Render status message
+  abAppend(ab, "\x1b[0K", 4);
+  int msglen = strlen(E.statusmsg);
+  if (msglen && time(NULL) - E.statusmsg_time < 5)
+    abAppend(ab, E.statusmsg, msglen <= cols ? msglen : cols);
+}
 
 /* --- NETWORK MODE --------------------------------------------------------- */
 
+#define NET_WIDTH 80
+#define NET_HEIGHT 60
+
+// Downscale and grayscale conversion for network transport
+// out_buffer must be NET_WIDTH * NET_HEIGHT bytes
+void resizeAndGray(frame *in, unsigned char *out) {
+  for (int y = 0; y < NET_HEIGHT; y++) {
+    for (int x = 0; x < NET_WIDTH; x++) {
+      // Map Transport Coord (x,y) -> Image Coord (ix, iy)
+      int ix = (x * in->width) / NET_WIDTH;
+      int iy = (y * in->height) / NET_HEIGHT;
+
+      int offset = (iy * in->width + ix) * 4;
+      unsigned char b = in->pixels[offset + 0];
+      unsigned char g = in->pixels[offset + 1];
+      unsigned char r = in->pixels[offset + 2];
+
+      out[y * NET_WIDTH + x] = (r+g+b)/3;
+    }
+  }
+}
+
+int tcpListen(int port) {
+  int server_fd, new_socket;
+  struct sockaddr_in address;
+  int opt = 1;
+  int addrlen = sizeof(address);
+
+  if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    perror("socket failed");
+    exit(EXIT_FAILURE);
+  }
+
+  // Forcefully attach socket to the port
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    perror("setsockopt");
+    exit(EXIT_FAILURE);
+  }
+
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = INADDR_ANY;
+  address.sin_port = htons(port);
+
+  if (bind(server_fd, (struct sockaddr *)&address, sizeof(address))<0) {
+    perror("bind failed");
+    exit(EXIT_FAILURE);
+  }
+
+  if (listen(server_fd, 3) < 0) {
+    perror("listen");
+    exit(EXIT_FAILURE);
+  }
+
+  fprintf(stderr, "Waiting for connection on port %d... (Ctrl+C to quit)\n",
+      port);
+
+  // Wait for connection with Ctrl+C support
+  while(1) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    FD_SET(server_fd, &readfds);
+
+    if (select(server_fd + 1, &readfds, NULL, NULL, NULL) < 0) {
+      if (errno == EINTR) continue;
+      perror("select");
+      exit(EXIT_FAILURE);
+    }
+
+    // Check for Ctrl+C
+    if (FD_ISSET(STDIN_FILENO, &readfds)) {
+      char c;
+      if (read(STDIN_FILENO, &c, 1) == 1) {
+        if (c == CTRL_C) {
+          write(STDOUT_FILENO, "\r\n", 2);
+          exit(0);
+        }
+      }
+    }
+
+    // Check for Incoming Connection
+    if (FD_ISSET(server_fd, &readfds)) {
+      if ((new_socket = accept(server_fd,
+              (struct sockaddr *)&address,
+              (socklen_t*)&addrlen)) < 0) {
+        perror("accept");
+        exit(EXIT_FAILURE);
+      }
+      break;
+    }
+  }
+
+  fprintf(stderr, "Connected!\n");
+  return new_socket;
+}
+
+int tcpConnect(const char *ip, int port) {
+  int sock = 0;
+  struct sockaddr_in serv_addr;
+
+  if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    perror("Socket creation error");
+    exit(EXIT_FAILURE);
+  }
+
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_port = htons(port);
+
+  if(inet_pton(AF_INET, ip, &serv_addr.sin_addr)<=0) {
+    perror("Invalid address/ Address not supported");
+    exit(EXIT_FAILURE);
+  }
+
+  // Set non-blocking to handle Ctrl+C during connect
+  fcntl(sock, F_SETFL, O_NONBLOCK);
+
+  fprintf(stderr, "Connecting to %s:%d... (Ctrl+C to quit)\n", ip, port);
+
+  int ret = connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+  if (ret < 0 && errno != EINPROGRESS) {
+    perror("Connection Failed");
+    exit(EXIT_FAILURE);
+  }
+
+  if (ret == 0) {
+    // Connected immediately
+    fprintf(stderr, "Connected!\n");
+    return sock;
+  }
+
+  // Wait for connection completion
+  while(1) {
+    fd_set readfds, writefds;
+    FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
+    FD_SET(STDIN_FILENO, &readfds);
+    FD_SET(sock, &writefds);
+
+    if (select(sock + 1, &readfds, &writefds, NULL, NULL) < 0) {
+      if (errno == EINTR) continue;
+      perror("select");
+      exit(EXIT_FAILURE);
+    }
+
+    // Check for Ctrl+C
+    if (FD_ISSET(STDIN_FILENO, &readfds)) {
+      char c;
+      if (read(STDIN_FILENO, &c, 1) == 1) {
+        if (c == CTRL_C) {
+          write(STDOUT_FILENO, "\r\n", 2);
+          exit(0);
+        }
+      }
+    }
+
+    // Check for Connect Result
+    if (FD_ISSET(sock, &writefds)) {
+      int so_error;
+      socklen_t len = sizeof(so_error);
+      getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+
+      if (so_error == 0) {
+        break; // Connected!
+      } else {
+        fprintf(stderr, "Connection failed: %s\n", strerror(so_error));
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
+
+  // Reset to blocking (or keep non-blocking as runNetworkMode sets it anyway)
+  // fcntl(sock, F_SETFL, 0);
+
+  fprintf(stderr, "Connected!\n");
+  return sock;
+}
+
+long long current_timestamp(void) {
+  struct timeval te;
+  gettimeofday(&te, NULL);
+  long long milliseconds = te.tv_sec*1000LL + te.tv_usec/1000;
+  return milliseconds;
+}
+
 void runNetworkMode(camera *cam) {
-  frame frame;
-  cameraGetFrame(cam, &frame);
+  int sockfd;
+
+  // Establish Connection
+  if (E.net_role == NET_ROLE_SERVER) {
+    sockfd = tcpListen(E.net_port);
+  } else {
+    sockfd = tcpConnect(E.net_ip, E.net_port);
+  }
+
+  // Set socket non-blocking
+  fcntl(sockfd, F_SETFL, O_NONBLOCK);
 
   initTerminal();
+
+  unsigned char net_buffer[NET_WIDTH * NET_HEIGHT];
+  unsigned char recv_buffer[NET_WIDTH * NET_HEIGHT + 3]; // +3 for header
+  int recv_len = 0;
+
+  long long next_frame_time = current_timestamp();
+
+  while (1) {
+    long long now = current_timestamp();
+    long long wait_ms = next_frame_time - now;
+    if (wait_ms < 0) wait_ms = 0;
+
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(STDIN_FILENO, &readfds);
+    FD_SET(sockfd, &readfds);
+
+    int maxfd = (sockfd > STDIN_FILENO) ? sockfd : STDIN_FILENO;
+
+    struct timeval tv;
+    tv.tv_sec = wait_ms / 1000;
+    tv.tv_usec = (wait_ms % 1000) * 1000;
+
+    int activity = select(maxfd + 1, &readfds, NULL, NULL, &tv);
+
+    // Handle User Input
+    if (activity > 0 && FD_ISSET(STDIN_FILENO, &readfds)) {
+      char c;
+      if (read(STDIN_FILENO, &c, 1) == 1) {
+        if (c == CTRL_C) break;
+      }
+    }
+
+    // Handle Network Receive
+    if (activity > 0 && FD_ISSET(sockfd, &readfds)) {
+      int n = read(sockfd, recv_buffer + recv_len,
+          sizeof(recv_buffer) - recv_len);
+      if (n == 0) {
+        // Connection closed
+        editorSetStatusMessage("Connection closed by peer.");
+        break;
+      } else if (n > 0) {
+        recv_len += n;
+
+        // Check if we have a full packet
+        // Packet: 'P' (1) + W (1) + H (1) + Data (W*H)
+        int expected = 3 + NET_WIDTH * NET_HEIGHT;
+
+        if (recv_len >= expected) {
+          // Verify Header
+          if (recv_buffer[0] == 'P' &&
+              recv_buffer[1] == NET_WIDTH &&
+              recv_buffer[2] == NET_HEIGHT) {
+            struct abuf ab = ABUF_INIT;
+            renderAsciiFrame(&ab, recv_buffer + 3, NET_WIDTH, NET_HEIGHT);
+            write(STDOUT_FILENO, ab.b, ab.len);
+            abFree(&ab);
+          }
+
+          // Shift remaining data
+          recv_len -= expected;
+          if (recv_len > 0) {
+            memmove(recv_buffer, recv_buffer + expected, recv_len);
+          }
+        }
+      }
+    }
+
+    // Send Frame (Rate Limited)
+    now = current_timestamp();
+    if (now >= next_frame_time) {
+      frame frame;
+      if (cameraGetFrame(cam, &frame)) {
+        resizeAndGray(&frame, net_buffer);
+
+        unsigned char header[3] = {'P', NET_WIDTH, NET_HEIGHT};
+        write(sockfd, header, 3);
+        write(sockfd, net_buffer, NET_WIDTH * NET_HEIGHT);
+      }
+      next_frame_time = now + 33; // Target ~30 FPS
+    }
+  }
+
+  close(sockfd);
 }
 
 /* --- MIRROR MODE ---------------------------------------------------------- */
@@ -604,12 +1216,20 @@ void runMirrorMode(camera *cam) {
     if (cameraGetFrame(cam, &frame)) {
       struct abuf ab = ABUF_INIT;
 
+      int rows = E.screenrows;
+      int cols = E.screencols;
+
+      if (rows <= 0 || cols <= 0) {
+        // Window too small, just sleep and continue
+        struct timespec ts = {0, 33000000};
+        nanosleep(&ts, NULL);
+        continue;
+      }
+
       abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
       abAppend(&ab,"\x1b[H",3); /* Go home. */
 
       unsigned char *p = frame.pixels;
-      int rows = E.screenrows;
-      int cols = E.screencols;
 
       for (int y = 0; y < rows; y++) {
         for (int x = 0; x < cols; x++) {
@@ -633,8 +1253,11 @@ void runMirrorMode(camera *cam) {
           int intensity = (r+g+b)/3;
 
           // Map to Char
-          int char_idx = (intensity * (DENSITY_LEN - 1)) / 255;
-          abAppend(&ab, &DENSITY_STR[char_idx], 1);
+          if (E.density_count > 0) {
+            int char_idx = (intensity * (E.density_count - 1)) / 255;
+            char *glyph = E.density_glyphs[char_idx];
+            abAppend(&ab, glyph, strlen(glyph));
+          }
         }
         abAppend(&ab, "\r\n", 2);
       }
@@ -656,35 +1279,155 @@ void runMirrorMode(camera *cam) {
   }
 }
 
-/* --- RUN CONFIG ----------------------------------------------------------- */
+/* --- CONFIG TUI ----------------------------------------------------------- */
 
-/* Parse the arguments to determine the config of this run.
- * Panics on invalid config. */
-void parse_arguments(int argc, char **argv) {
-  // When called with no arguments, default to network mode.
-  if (argc == 1) {
-    E.mode = MODE_NETWORK;
-    return;
+// Simple text input in raw mode
+void ttyInput(const char *prompt, char *buffer, int maxlen) {
+  int len = strlen(buffer);
+
+  while(1) {
+    struct abuf ab = ABUF_INIT;
+    abAppend(&ab, "\x1b[H\x1b[2J", 7);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s\r\n\r\n > %s", prompt, buffer);
+    abAppend(&ab, buf, strlen(buf));
+    abAppend(&ab, "\x1b[?25h", 6); // Show cursor
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
+
+    int c = editorReadKey(STDIN_FILENO);
+
+    if (c == ENTER) {
+      break;
+    } else if (c == BACKSPACE || c == CTRL_H || c == DEL_KEY) {
+      if (len > 0) {
+        len--;
+        buffer[len] = '\0';
+      }
+    } else if (!iscntrl(c) && c < 128) {
+      if (len < maxlen - 1) {
+        buffer[len] = c;
+        len++;
+        buffer[len] = '\0';
+      }
+    } else if (c == CTRL_C) {
+      // Cancel input
+      break;
+    }
   }
+  write(STDOUT_FILENO, "\x1b[?25l", 6); // Hide cursor again
+}
 
-  if (argc == 2) {
-    if (strcmp(argv[1], "--mirror") == 0) {
-      E.mode = MODE_MIRROR; // Mirror mode
-      return;
-    } else if (strcmp(argv[1], "--network") == 0) {
-      E.mode = MODE_NETWORK; // Network mode
-      return;
+int ttyMenu(const char *prompt, const char **options, int count) {
+  int selected = 0;
+  while(1) {
+    struct abuf ab = ABUF_INIT;
+    abAppend(&ab, "\x1b[?25l", 6); /* Hide cursor */
+    abAppend(&ab, "\x1b[H\x1b[2J", 7); /* Clear */
+
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s\r\n\r\n", prompt);
+    abAppend(&ab, buf, strlen(buf));
+
+    for (int i = 0; i < count; i++) {
+      if (i == selected) {
+        abAppend(&ab, "\x1b[7m", 4); // Invert
+        snprintf(buf, sizeof(buf), " > %s \r\n", options[i]);
+        abAppend(&ab, buf, strlen(buf));
+        abAppend(&ab, "\x1b[0m", 4);
+      } else {
+        snprintf(buf, sizeof(buf), "   %s \r\n", options[i]);
+        abAppend(&ab, buf, strlen(buf));
+      }
+    }
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
+
+    int c = editorReadKey(STDIN_FILENO);
+
+    if (c == ESC || c == 'q' || c == CTRL_C) {
+      write(STDOUT_FILENO, "\x1b[2J", 4);
+      exit(0);
+    }
+
+    switch(c) {
+      case ARROW_UP:
+        if (selected > 0) selected--;
+        break;
+      case ARROW_DOWN:
+        if (selected < count - 1) selected++;
+        break;
+      case ENTER:
+        return selected;
+    }
+  }
+}
+
+void parseIpPortString(char *str) {
+  char *colon = strchr(str, ':');
+  if (colon) {
+    *colon = '\0';
+    strncpy(E.net_ip, str, 63);
+    E.net_port = atoi(colon + 1);
+  } else {
+    strncpy(E.net_ip, str, 63);
+  }
+}
+
+void configureTUI(void) {
+  const char *mode_opts[] = {
+    "[Mirror Mode] See yourself in the mirror.",
+    "[Network Mode] Call a friend: create a room or join a call."
+  };
+  int mode = ttyMenu("Select Mode:", mode_opts, 2);
+
+  if (mode == 0) {
+    E.mode = MODE_MIRROR;
+  } else {
+    E.mode = MODE_NETWORK;
+    const char *role_opts[] = {
+      "[create new room]",
+      "[join room]"
+    };
+    int role = ttyMenu("Select Role:", role_opts, 2);
+
+    if (role == 0) {
+      E.net_role = NET_ROLE_SERVER;
+      char buf[32];
+      snprintf(buf, sizeof(buf), "%d", E.net_port);
+      ttyInput("Enter Port:", buf, 31);
+      E.net_port = atoi(buf);
+    } else {
+      E.net_role = NET_ROLE_CLIENT;
+      char buf[128];
+      snprintf(buf, sizeof(buf), "%s:%d", E.net_ip, E.net_port);
+      ttyInput("Enter IP:PORT:", buf, 127);
+      parseIpPortString(buf);
     }
   }
 
-  // Show usage string.
-  fprintf(stderr, "Usage: %s [--help | --mirror | --network]\n", argv[0]);
+  const char *cam_opts[] = {
+    "[laptop]",
+    "[dummy]"
+  };
+  int cam = ttyMenu("Select Webcam:", cam_opts, 2);
+  E.dummy_mode = (cam == 1);
 
-  // Exit with err code 0 if program was called with --help, 1 otherwise.
-  if (argc == 2 && strcmp(argv[1], "--help") == 0) {
-    exit(0);
+  const char *density_opts[] = {
+    "[ascii default]   (" DENSITY_ASCII_DEFAULT ")",
+    "[unicode default] (" DENSITY_UNICODE_DEFAULT ")",
+    "[custom]"
+  };
+  int dens = ttyMenu("Select Density String:", density_opts, 3);
+  if (dens == 0) {
+    strcpy(E.density_arg, "ascii-default");
+  } else if (dens == 1) {
+    strcpy(E.density_arg, "unicode-default");
   } else {
-    exit(1);
+    ttyInput("Enter Density String (dark to light):", E.density_arg, 255);
   }
 }
 
@@ -692,14 +1435,22 @@ void parse_arguments(int argc, char **argv) {
 
 int main(int argc, char **argv) {
   initEditor();
-  parse_arguments(argc, argv);
 
   camera cam;
+
+  if (argc > 1) {
+    parse_config_args(argc, argv);
+    initTerminal();
+    enableRawMode(STDIN_FILENO);
+  } else {
+    initTerminal();
+    enableRawMode(STDIN_FILENO);
+    configureTUI();
+  }
+
+  resolveDensityConfig();
   cameraInit(&cam, 640, 480);
   cameraStart(&cam);
-
-  initTerminal();
-  enableRawMode(STDIN_FILENO);
 
   char *mode_str = (E.mode == MODE_MIRROR) ? "mirror" : "network";
   editorSetStatusMessage("HELP: Ctrl-C = quit | starting in %s mode", mode_str);

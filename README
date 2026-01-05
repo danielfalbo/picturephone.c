@@ -1,6 +1,6 @@
 PICTUREPHONE
 
-  Ascii video-conferencing in the terminal.
+  Text-based video-conferencing in the terminal.
 
   CREDITS AND INSPIRATION
 
@@ -8,18 +8,33 @@ PICTUREPHONE
     antirez/kilo
     ertdfgcvb/play.core
 
+  MIRROR MODE
+
+    To get started, you can see yourself in the mirror by running
+
+      picturephone --mirror
+
+    which will activate the default webcam of your laptop and render your
+    text-based video feedback in your terminal.
+
+  USAGE
+
+    Local Mirror:
+      ./picturephone --mirror
+
+    Network Host (Alice):
+      ./picturephone --listen 3000
+
+    Network Client (Bob):
+      ./picturephone --connect <Alice_IP>:3000
+
   TODO
 
-    1. NETWORK MODE: 1-on-1
+    --list-cameras
 
-      - [ ] Find a way to create peer-to-peer connections with friends. Let's
-            start with just 1-on-1s.
+    --camera
 
-      - [ ] Send data via a raw TCP or even UDP connection. No https or any
-            other existing (encrypted) protocol. Let's implement our own
-            protocol, unencrypted at first.
-
-    2. UI
+    1. UI
 
       - [ ] Ask [accept | reject] before letting your friend in the call.
 
@@ -29,17 +44,17 @@ PICTUREPHONE
             have an option to switch between split screen and youself in the bot
             corner.
 
-    3. GROUP MODE: 3+ people call
+    2. GROUP MODE: 3+ people call
 
       - [ ] Support multiple people calls, consider both a peer-to-peer solution
             (braindead simple, no raft) and centralizing the call (redis?).
 
-    4. ENCRYPTION
+    3. ENCRYPTION
 
       - [ ] Implement encryption of the data transmitted. Nothing standard, our
             own implementation.
 
-    5. INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
+    4. INCREMENTAL VIDEO STREAMING CODEC OPTIMIZATION
 
       - [ ] Consider optimizing the data transmission protocol to be incremental
             so it uses less data, and then is encoded/decoded on clients.
@@ -47,6 +62,6 @@ PICTUREPHONE
             from the previous frame. Similarly, the terminal should only update
             the changed cells, not the entire picture.
 
-    6. PORTABILITY
+    5. PORTABILITY
 
       - [ ] Support linux and bsd webcam interfaces.
