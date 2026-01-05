@@ -7,3 +7,42 @@ PICTUREPHONE
     kubrick/2001
     antirez/kilo
     ertdfgcvb/play.core
+
+  TODO
+
+    - [ ] Use macOS API to capture webcam.
+
+    - [ ] Translate macOS webcam API into generic struct
+          we could later use on other OSes, webcams resolutions, etc too.
+
+    - [ ] Interpret/convert webcam output as grayscale intensity or whatever
+          is the most optimized and portable grayscale format.
+
+    - [ ] Convert grayscale to ASCII as seen at
+          https://github.com/ertdfgcvb/play.core/blob/master/src/programs/camera/camera_gray.js
+
+    - [ ] Output fixed-size ascii output in the terminal.
+
+    - [ ] Change the ascii output in the terminal based on the terminal size,
+          update on resize.
+
+    - [ ] Find a way to create peer-to-peer connections with friends. Let's
+          start with just 1-on-1s.
+
+    - [ ] Send data via a raw TCP or even UDP connection. No https or any other
+          existing (encrypted) protocol. Let's implement our own protocol,
+          unencrypted at first.
+
+    - [ ] Ask [accept | reject] before letting people in the call.
+
+    - [ ] See yourself too in a small box in the bottom right corner.
+
+    - [ ] Implement encryption of the data transmitted.
+
+    - [ ] Support multiple people calls, consider both a peer-to-peer solution
+          (raft or something?) and centralizing the call (redis?).
+
+    - [ ] Consider optimizing the data transmission protocol to be incremental
+          so it uses less data, and then is encoded/decoded on clients.
+
+    - [ ] Support linux and bsd webcam interfaces.
