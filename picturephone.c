@@ -957,6 +957,8 @@ void editorSetStatusMessage(const char *fmt, ...) {
 
 /* --- DENSITY STRING HANDLING ---------------------------------------------- */
 
+/* Return the number of bytes that compose the UTF-8 character starting at
+ * 'c'. */
 int get_utf8_char_len(unsigned char c) {
   if ((c & 0x80) == 0) return 1;
   if ((c & 0xE0) == 0xC0) return 2;
@@ -1650,9 +1652,11 @@ void ttyInput(const char *prompt, char *buffer, int maxlen) {
     } else if (c == BACKSPACE || c == CTRL_H || c == DEL_KEY) {
       if (len > 0) {
         len--;
+        // If it's a UTF-8 continuation byte, keep going back
+        while (len > 0 && (buffer[len] & 0xC0) == 0x80) len--;
         buffer[len] = '\0';
       }
-    } else if (!iscntrl(c) && c < 128) {
+    } else if (!iscntrl(c) || (unsigned char)c >= 128) {
       if (len < maxlen - 1) {
         buffer[len] = c;
         len++;
