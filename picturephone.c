@@ -917,16 +917,22 @@ failed:
 struct abuf {
   char *b;
   int len;
+  int cap;
 };
 
-#define ABUF_INIT {NULL,0}
+#define ABUF_INIT {NULL,0,0}
 
 void abAppend(struct abuf *ab, const char *s, int len) {
-  char *new = realloc(ab->b,ab->len+len);
+  if (ab->len + len > ab->cap) {
+    int new_cap = ab->cap == 0 ? 128 : ab->cap;
+    while (new_cap < ab->len + len) new_cap *= 2;
+    char *new = realloc(ab->b, new_cap);
+    if (new == NULL) return;
+    ab->b = new;
+    ab->cap = new_cap;
+  }
 
-  if (new == NULL) return;
-  memcpy(new+ab->len,s,len);
-  ab->b = new;
+  memcpy(ab->b+ab->len,s,len);
   ab->len += len;
 }
 
